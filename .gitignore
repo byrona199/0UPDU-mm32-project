@@ -1,0 +1,15 @@
+# Keil
+*.uvoptx
+*.uvguix.*
+*.bak
+*.log
+Objects/
+Listings/
+
+# build
+*.o
+*.d
+*.axf
+
+# VSCode
+.vscode/
