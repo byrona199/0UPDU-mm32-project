@@ -1,7 +1,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// @file    can.c
 /// @author  AE TEAM
-/// @brief   THIS FILE PROVIDES ALL THE SYSTEM FUNCTIONS.
+/// @brief   CAN Bus driver for MM32 PDU node.
+///          Handles CAN GPIO, filter, TX (single + multi-frame), and RX IRQ.
 ////////////////////////////////////////////////////////////////////////////////
 /// @attention
 ///
@@ -15,49 +16,18 @@
 /// <H2><CENTER>&COPY; COPYRIGHT MINDMOTION </CENTER></H2>
 ////////////////////////////////////////////////////////////////////////////////
 
-// Define to prevent recursive inclusion
 #define _CAN_C_
 
-// Files includes
 #include "stdio.h"
 #include "hal_can.h"
 #include "can.h"
 
 CanPeliRxMsg gCanPeliRxMsgBuff;
-CanTxMsg gCanTxMsgBuff;
-////////////////////////////////////////////////////////////////////////////////
-/// @addtogroup MM32_Example_Layer
-/// @{
+CanTxMsg     gCanTxMsgBuff;
 
-////////////////////////////////////////////////////////////////////////////////
-/// @addtogroup CAN
-/// @{
-
-////////////////////////////////////////////////////////////////////////////////
-/// @addtogroup CAN_Exported_Constants
-/// @{
-
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief  initialize CAN GPIO pin
-/// @note   if use jtag/swd interface GPIO PIN as CAN, need to be careful,
-///         can not debug or program.
-/// @param  None.
-/// @retval None.
-////////////////////////////////////////////////////////////////////////////////
-
-////////////////////////////////////////////////////////////////////////////////
-/// @brief   CAN initialize
-/// @note   None.
-/// @param  None.
-/// @retval None.
-////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////
-/// @brief   CAN initialize
-/// @note   None.
-/// @param  None.
-/// @retval None.
-////////////////////////////////////////////////////////////////////////////////
+/*============================================================================
+ * Internal: CAN GPIO Setup (PA11=RX, PA12=TX)
+ *============================================================================*/
 static void CAN_GPIO_Config(void)
 {
     GPIO_InitTypeDef GPIO_InitStructure;
@@ -65,127 +35,107 @@ static void CAN_GPIO_Config(void)
 
     RCC_APB1PeriphClockCmd(RCC_APB1ENR_CAN, ENABLE);
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_SYSCFG, ENABLE);
-    //CAN RX PA11
-    RCC_AHBPeriphClockCmd( RCC_AHBPeriph_GPIOA, ENABLE);
+
+    /* CAN RX - PA11 */
+    RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOA, ENABLE);
     GPIO_StructInit(&GPIO_InitStructure);
-    GPIO_InitStructure.GPIO_Pin  = GPIO_Pin_11;
+    GPIO_InitStructure.GPIO_Pin   = GPIO_Pin_11;
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_FLOATING;
+    GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_FLOATING;
     GPIO_Init(GPIOA, &GPIO_InitStructure);
 
-    //CAN TX PA12
-    GPIO_InitStructure.GPIO_Pin  = GPIO_Pin_12;
+    /* CAN TX - PA12 */
+    GPIO_InitStructure.GPIO_Pin   = GPIO_Pin_12;
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;
+    GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_AF_PP;
     GPIO_Init(GPIOA, &GPIO_InitStructure);
 
     GPIO_PinAFConfig(GPIOA, GPIO_PinSource11, GPIO_AF_4);
     GPIO_PinAFConfig(GPIOA, GPIO_PinSource12, GPIO_AF_4);
 
-    NVIC_InitStructure.NVIC_IRQChannel = CAN_IRQn;
-    NVIC_InitStructure.NVIC_IRQChannelPriority = 0;
-    NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+    NVIC_InitStructure.NVIC_IRQChannel         = CAN_IRQn;
+    NVIC_InitStructure.NVIC_IRQChannelPriority  = 0;
+    NVIC_InitStructure.NVIC_IRQChannelCmd       = ENABLE;
     NVIC_Init(&NVIC_InitStructure);
-
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief   parameter configuration
-/// @note    It must be careful of the Chip Version.
-/// @param  CAN_Pre: CAN_250K  CAN_500K ( CAN traffic rate.)
-/// @param  CAN_Mode:
-///                  StandardFrame_SingleFilter=0
-///                  StandardFrame_SingleFilter=1
-///                  ExtendedFrame_SingleFilter=2
-///                  ExtendedFrame_DoubleFilter=3
-/// @param  idCode1:receiving address1
-/// @param  idCode2:receiving address2
-/// @param  mask1  : Mask frame Settings
-/// @param  mask2  : Mask frame Settings
-/// @retval None.
-////////////////////////////////////////////////////////////////////////////////
+/*============================================================================
+ * CAN_Config: baud rate + acceptance filter
+ *============================================================================*/
 void CAN_Config(u32 CAN_Pre, CAN_Mode ID, u32 idCode1, u32 idCode2, u32 mask1, u32 mask2)
 {
-    CAN_Peli_InitTypeDef          CAN_Peli_InitStructure;
-    RCC_ClocksTypeDef             RCC_Clocks;
+    CAN_Peli_InitTypeDef       CAN_Peli_InitStructure;
+    RCC_ClocksTypeDef          RCC_Clocks;
     u32 idCodeTemp1, idMaskTemp1;
     u32 idCodeTemp2, idMaskTemp2;
-    CAN_Peli_FilterInitTypeDef    CAN_Peli_FilterInitStructure;
-    //Enter reset mode
+    CAN_Peli_FilterInitTypeDef CAN_Peli_FilterInitStructure;
+
     CAN_ResetMode_Cmd(CAN1, ENABLE);
-    //CAN enters Peli mode
     CAN_Mode_Cmd(CAN1, CAN_PELIMode);
 
     RCC_GetClocksFreq(&RCC_Clocks);
 
     CAN_Peli_StructInit(&CAN_Peli_InitStructure);
     CAN_Peli_FilterStructInit(&CAN_Peli_FilterInitStructure);
-    CAN_AutoCfg_BaudParam( &CAN_Peli_InitStructure, RCC_Clocks.PCLK1_Frequency, CAN_Pre);
-    //sampling point
+    CAN_AutoCfg_BaudParam(&CAN_Peli_InitStructure, RCC_Clocks.PCLK1_Frequency, CAN_Pre);
+
     CAN_Peli_InitStructure.SAM = RESET;
-    //Self-test mode
     CAN_Peli_InitStructure.STM = DISABLE;
-    //Listen to model
     CAN_Peli_InitStructure.LOM = DISABLE;
-    //  CAN_Peli_InitStructure.EWLR = 0x96;
     CAN_Peli_Init(&CAN_Peli_InitStructure);
 
-    switch(ID) {
+    switch (ID) {
         case StandardFrame_SingleFilter:
             idCodeTemp1 = idCode1 << (3 + 18);
-            idMaskTemp1 = mask1 << (3 + 18);
+            idMaskTemp1 = mask1   << (3 + 18);
             CAN_Peli_FilterInitStructure.AFM = CAN_FilterMode_Singal;
-            CAN_Peli_FilterInitStructure.CAN_FilterId0 = (idCodeTemp1 >> 24) & 0xff;
-            CAN_Peli_FilterInitStructure.CAN_FilterId1 = (idCodeTemp1 >> 16) & 0xff;
-            CAN_Peli_FilterInitStructure.CAN_FilterId2 = (idCodeTemp1 >> 8) & 0xff;
-            CAN_Peli_FilterInitStructure.CAN_FilterId3 = (idCodeTemp1 >> 0) & 0xff;
-
+            CAN_Peli_FilterInitStructure.CAN_FilterId0     = (idCodeTemp1 >> 24) & 0xff;
+            CAN_Peli_FilterInitStructure.CAN_FilterId1     = (idCodeTemp1 >> 16) & 0xff;
+            CAN_Peli_FilterInitStructure.CAN_FilterId2     = (idCodeTemp1 >>  8) & 0xff;
+            CAN_Peli_FilterInitStructure.CAN_FilterId3     = (idCodeTemp1 >>  0) & 0xff;
             CAN_Peli_FilterInitStructure.CAN_FilterMaskId0 = (idMaskTemp1 >> 24) & 0xff;
             CAN_Peli_FilterInitStructure.CAN_FilterMaskId1 = ((idMaskTemp1 >> 16) & 0xff) | 0x1f;
-            CAN_Peli_FilterInitStructure.CAN_FilterMaskId2 = ((idMaskTemp1 >> 8) & 0xff) | 0xff;
-            CAN_Peli_FilterInitStructure.CAN_FilterMaskId3 = ((idMaskTemp1 >> 0) & 0xff) | 0xff;
+            CAN_Peli_FilterInitStructure.CAN_FilterMaskId2 = ((idMaskTemp1 >>  8) & 0xff) | 0xff;
+            CAN_Peli_FilterInitStructure.CAN_FilterMaskId3 = ((idMaskTemp1 >>  0) & 0xff) | 0xff;
             break;
         case ExtendedFrame_SingleFilter:
             idCodeTemp1 = idCode1 << 3;
-            idMaskTemp1 = mask1 << 3;
+            idMaskTemp1 = mask1   << 3;
             CAN_Peli_FilterInitStructure.AFM = CAN_FilterMode_Singal;
-            CAN_Peli_FilterInitStructure.CAN_FilterId0 = (idCodeTemp1 >> 24) & 0xff;
-            CAN_Peli_FilterInitStructure.CAN_FilterId1 = (idCodeTemp1 >> 16) & 0xff;
-            CAN_Peli_FilterInitStructure.CAN_FilterId2 = (idCodeTemp1 >> 8) & 0xff;
-            CAN_Peli_FilterInitStructure.CAN_FilterId3 = idCodeTemp1 & 0xff;
-
+            CAN_Peli_FilterInitStructure.CAN_FilterId0     = (idCodeTemp1 >> 24) & 0xff;
+            CAN_Peli_FilterInitStructure.CAN_FilterId1     = (idCodeTemp1 >> 16) & 0xff;
+            CAN_Peli_FilterInitStructure.CAN_FilterId2     = (idCodeTemp1 >>  8) & 0xff;
+            CAN_Peli_FilterInitStructure.CAN_FilterId3     = (idCodeTemp1 >>  0) & 0xff;
             CAN_Peli_FilterInitStructure.CAN_FilterMaskId0 = (idMaskTemp1 >> 24) & 0xff;
-            CAN_Peli_FilterInitStructure.CAN_FilterMaskId1 = ((idMaskTemp1 >> 16) & 0xff);
-            CAN_Peli_FilterInitStructure.CAN_FilterMaskId2 = ((idMaskTemp1 >> 8) & 0xff);
-            CAN_Peli_FilterInitStructure.CAN_FilterMaskId3 = ((idMaskTemp1 >> 0) & 0xff);
+            CAN_Peli_FilterInitStructure.CAN_FilterMaskId1 = (idMaskTemp1 >> 16) & 0xff;
+            CAN_Peli_FilterInitStructure.CAN_FilterMaskId2 = (idMaskTemp1 >>  8) & 0xff;
+            CAN_Peli_FilterInitStructure.CAN_FilterMaskId3 = (idMaskTemp1 >>  0) & 0xff;
             break;
         case StandardFrame_DoubleFilter:
             idCodeTemp1 = idCode1 << (3 + 18);
-            idMaskTemp1 = mask1 << (3 + 18);
+            idMaskTemp1 = mask1   << (3 + 18);
             idCodeTemp2 = idCode2 << (3 + 18);
-            idMaskTemp2 = mask2 << (3 + 18);
+            idMaskTemp2 = mask2   << (3 + 18);
             CAN_Peli_FilterInitStructure.AFM = CAN_FilterMode_Double;
-            CAN_Peli_FilterInitStructure.CAN_FilterId0 = (idCodeTemp1 >> 24) & 0xff;
-            CAN_Peli_FilterInitStructure.CAN_FilterId1 = (idCodeTemp1 >> 16) & 0xff;
-            CAN_Peli_FilterInitStructure.CAN_FilterId2 = (idCodeTemp2 >> 24) & 0xff;
-            CAN_Peli_FilterInitStructure.CAN_FilterId3 = (idCodeTemp2 >> 16) & 0xff;
-
+            CAN_Peli_FilterInitStructure.CAN_FilterId0     = (idCodeTemp1 >> 24) & 0xff;
+            CAN_Peli_FilterInitStructure.CAN_FilterId1     = (idCodeTemp1 >> 16) & 0xff;
+            CAN_Peli_FilterInitStructure.CAN_FilterId2     = (idCodeTemp2 >> 24) & 0xff;
+            CAN_Peli_FilterInitStructure.CAN_FilterId3     = (idCodeTemp2 >> 16) & 0xff;
             CAN_Peli_FilterInitStructure.CAN_FilterMaskId0 = (idMaskTemp1 >> 24) & 0xff;
             CAN_Peli_FilterInitStructure.CAN_FilterMaskId1 = ((idMaskTemp1 >> 16) & 0xff) | 0x1f;
             CAN_Peli_FilterInitStructure.CAN_FilterMaskId2 = (idMaskTemp2 >> 24) & 0xff;
             CAN_Peli_FilterInitStructure.CAN_FilterMaskId3 = ((idMaskTemp2 >> 16) & 0xff) | 0x1f;
             break;
         case ExtendedFrame_DoubleFilter:
-            idCodeTemp1 = idCode1 << (3);
-            idMaskTemp1 = mask1 << (3);
-            idCodeTemp2 = idCode2 << (3);
-            idMaskTemp2 = mask2 << (3);
+            idCodeTemp1 = idCode1 << 3;
+            idMaskTemp1 = mask1   << 3;
+            idCodeTemp2 = idCode2 << 3;
+            idMaskTemp2 = mask2   << 3;
             CAN_Peli_FilterInitStructure.AFM = CAN_FilterMode_Double;
-            CAN_Peli_FilterInitStructure.CAN_FilterId0 = (idCodeTemp1 >> 24) & 0xff;
-            CAN_Peli_FilterInitStructure.CAN_FilterId1 = (idCodeTemp1 >> 16) & 0xff;
-            CAN_Peli_FilterInitStructure.CAN_FilterId2 = (idCodeTemp2 >> 24) & 0xff;
-            CAN_Peli_FilterInitStructure.CAN_FilterId3 = (idCodeTemp2 >> 16) & 0xff;
-
+            CAN_Peli_FilterInitStructure.CAN_FilterId0     = (idCodeTemp1 >> 24) & 0xff;
+            CAN_Peli_FilterInitStructure.CAN_FilterId1     = (idCodeTemp1 >> 16) & 0xff;
+            CAN_Peli_FilterInitStructure.CAN_FilterId2     = (idCodeTemp2 >> 24) & 0xff;
+            CAN_Peli_FilterInitStructure.CAN_FilterId3     = (idCodeTemp2 >> 16) & 0xff;
             CAN_Peli_FilterInitStructure.CAN_FilterMaskId0 = (idMaskTemp1 >> 24) & 0xff;
             CAN_Peli_FilterInitStructure.CAN_FilterMaskId1 = (idMaskTemp1 >> 16) & 0xff;
             CAN_Peli_FilterInitStructure.CAN_FilterMaskId2 = (idMaskTemp2 >> 24) & 0xff;
@@ -196,93 +146,183 @@ void CAN_Config(u32 CAN_Pre, CAN_Mode ID, u32 idCode1, u32 idCode2, u32 mask1, u
     }
     CAN_Peli_FilterInit(&CAN_Peli_FilterInitStructure);
     CAN_Peli_ITConfig(CAN_IT_RI, ENABLE);
-    //Exit reset mode and enter working mode
     CAN_ResetMode_Cmd(CAN1, DISABLE);
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief  Send function
-/// @note   the register configuration if there is no return value.
-/// @param  TxMessage:Sent message.
-/// @retval None.
-////////////////////////////////////////////////////////////////////////////////
-void Send_CANFrame(CanTxMsg* TxMessage)
+/*============================================================================
+ * Send_CANFrame: transmit a single CAN frame (no artificial delay)
+ *============================================================================*/
+void Send_CANFrame(CanTxMsg *TxMessage)
 {
-    CanPeliTxMsg     CanPeliTxMsgStructure;
+    CanPeliTxMsg CanPeliTxMsgStructure;
     u32 ID = 0;
     u32 i;
 
-    if(TxMessage->CANIDtype) {
+    if (TxMessage->CANIDtype) {
+        /* Extended frame */
         ID = TxMessage->CANID << 3;
-
         CanPeliTxMsgStructure.FF   = 0x01;
-        CanPeliTxMsgStructure.IDLL = (ID >> 0) & 0xff;
-        CanPeliTxMsgStructure.IDLH = (ID >> 8) & 0xff;
+        CanPeliTxMsgStructure.IDLL = (ID >>  0) & 0xff;
+        CanPeliTxMsgStructure.IDLH = (ID >>  8) & 0xff;
         CanPeliTxMsgStructure.IDHL = (ID >> 16) & 0xff;
         CanPeliTxMsgStructure.IDHH = (ID >> 24) & 0xff;
-    }
-    else {
+    } else {
+        /* Standard frame */
         ID = TxMessage->CANID << 21;
-
         CanPeliTxMsgStructure.FF   = 0x00;
         CanPeliTxMsgStructure.IDHL = (ID >> 16) & 0xff;
         CanPeliTxMsgStructure.IDHH = (ID >> 24) & 0xff;
     }
 
-    CanPeliTxMsgStructure.DLC  = TxMessage->DLC;
-    CanPeliTxMsgStructure.RTR  = TxMessage->RTR;
+    CanPeliTxMsgStructure.DLC = TxMessage->DLC;
+    CanPeliTxMsgStructure.RTR = TxMessage->RTR;
 
-    for(i = 0; i < 8; i ++ ) {
-        CanPeliTxMsgStructure.Data[i] = *(TxMessage->Data + i);
+    for (i = 0; i < 8; i++) {
+        CanPeliTxMsgStructure.Data[i] = TxMessage->Data[i];
     }
 
     CAN_Peli_Transmit(&CanPeliTxMsgStructure);
-    osDelay(5); // delay 5 ms avoid some issue
+    /* No delay — CAN hardware handles arbitration and TX timing */
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief  Interrupt service function
-/// @note   Note the arbitration register when receiving an exception.
-/// @param  None.
-/// @retval None.
-////////////////////////////////////////////////////////////////////////////////
+/*============================================================================
+ * CAN_SendSingleFrame: send ≤7 bytes payload with transport header
+ *============================================================================*/
+void CAN_SendSingleFrame(uint8_t msg_type, const uint8_t *data, uint8_t len)
+{
+    CanTxMsg tx;
+    uint8_t i;
+
+    if (len > CAN_TRANSPORT_PAYLOAD) len = CAN_TRANSPORT_PAYLOAD;
+
+    tx.CANID     = CAN_MAKE_ID(msg_type, MY_NODE_ID);
+    tx.CANIDtype = CAN_ID_STD;
+    tx.RTR       = CAN_DATA_FRAME;
+    tx.DLC       = len + 1;  /* +1 for transport header byte */
+
+    tx.Data[0] = CAN_MAKE_HEADER(CAN_FRAME_SINGLE, 0);
+    for (i = 0; i < len; i++) {
+        tx.Data[1 + i] = data[i];
+    }
+    /* Zero-pad remaining bytes */
+    for (i = len + 1; i < 8; i++) {
+        tx.Data[i] = 0;
+    }
+
+    Send_CANFrame(&tx);
+}
+
+/*============================================================================
+ * CAN_SendMultiFrame: fragment payload into First/Continuation/Last frames
+ *============================================================================*/
+void CAN_SendMultiFrame(uint8_t msg_type, const uint8_t *data, uint16_t len)
+{
+    CanTxMsg tx;
+    uint16_t offset = 0;
+    uint8_t  seq    = 0;
+    uint8_t  frame_type;
+    uint8_t  chunk;
+    uint8_t  i;
+
+    /* Single frame if it fits */
+    if (len <= CAN_TRANSPORT_PAYLOAD) {
+        CAN_SendSingleFrame(msg_type, data, (uint8_t)len);
+        return;
+    }
+
+    tx.CANID     = CAN_MAKE_ID(msg_type, MY_NODE_ID);
+    tx.CANIDtype = CAN_ID_STD;
+    tx.RTR       = CAN_DATA_FRAME;
+    tx.DLC       = 8;
+
+    while (offset < len) {
+        uint16_t remain = len - offset;
+
+        if (offset == 0) {
+            frame_type = CAN_FRAME_FIRST;
+        } else if (remain <= CAN_TRANSPORT_PAYLOAD) {
+            frame_type = CAN_FRAME_LAST;
+        } else {
+            frame_type = CAN_FRAME_CONTINUATION;
+        }
+
+        chunk = (remain > CAN_TRANSPORT_PAYLOAD) ? CAN_TRANSPORT_PAYLOAD : (uint8_t)remain;
+
+        tx.Data[0] = CAN_MAKE_HEADER(frame_type, seq);
+        for (i = 0; i < chunk; i++) {
+            tx.Data[1 + i] = data[offset + i];
+        }
+        /* Zero-pad last frame if needed */
+        for (i = chunk + 1; i < 8; i++) {
+            tx.Data[i] = 0;
+        }
+        if (frame_type == CAN_FRAME_LAST) {
+            tx.DLC = chunk + 1;
+        }
+
+        Send_CANFrame(&tx);
+
+        offset += chunk;
+        seq = (seq + 1) & CAN_FRAME_SEQ_MASK;
+    }
+}
+
+/*============================================================================
+ * CAN IRQ Handler: receive message and set flag
+ *============================================================================*/
 void CAN_IRQHandler(void)
 {
     u32 CAN_IR_STA;
     u32 CAN_SR_STA;
+
     CAN_IR_STA = CAN1_PELI->IR;
     CAN_SR_STA = CAN1_PELI->SR;
-    if(CAN_IR_STA & CAN_IT_RI) {
-        //Message received successfully
+
+    if (CAN_IR_STA & CAN_IT_RI) {
         CAN_Peli_Receive(&gCanPeliRxMsgBuff);
         flag = 1;
     }
-    //error
-    if(CAN_IR_STA & CAN_IT_BEI) {
+
+    /* Bus error — ignore for now (protocol handled by master) */
+    if (CAN_IR_STA & CAN_IT_BEI) {
     }
-    if(CAN_SR_STA & CAN_STATUS_DOS  ) {
-        CAN1_PELI->CMR  |= 0x01 << 5;
-        CAN1_PELI->CMR  |= 0x08;
+
+    /* Data overrun — release receive buffer */
+    if (CAN_SR_STA & CAN_STATUS_DOS) {
+        CAN1_PELI->CMR |= 0x01 << 5;
+        CAN1_PELI->CMR |= 0x08;
     }
-    //Arbitration is missing
-    if(CAN_IR_STA & CAN_IT_ALI  ) {
+
+    /* Arbitration lost — normal in multi-node bus */
+    if (CAN_IR_STA & CAN_IT_ALI) {
     }
 }
-////////////////////////////////////////////////////////////////////////////////
-/// @brief  CAN BUS initialization configuration
-/// @note   None.
-/// @param  None.
-/// @retval None.
-////////////////////////////////////////////////////////////////////////////////
+
+/*============================================================================
+ * CAN_NVIC_Init: entry point called from main()
+ *
+ * Filter setup: Accept all Standard frames addressed to MY_NODE_ID or
+ * broadcast (NODE_ID=0). Uses mask filter on NODE_ID bits [4:0].
+ *
+ * Filter ID  = MY_NODE_ID in bits [4:0], MSG_TYPE bits [10:5] = don't care
+ * Filter Mask: accept if (rx_id & mask) == (filter_id & mask)
+ *   - Bits [10:5] (MSG_TYPE): mask=0 → accept all message types
+ *   - Bits [4:0]  (NODE_ID):  mask=0x1F → exact match on NODE_ID
+ *
+ * NOTE: Uses double filter to accept both MY_NODE_ID and broadcast (0).
+ *============================================================================*/
 void CAN_NVIC_Init(void)
 {
     CAN_GPIO_Config();
-    // Rate CAN_250K   Mode StandardFrame Single filtering
-    CAN_Config(CAN_500K, StandardFrame_SingleFilter, 0x21, 0x00, 0x00, 0x00);
+    /* 250 kbps, Standard Double Filter:
+     * Filter 1: MY_NODE_ID with mask 0x1F (match only our node ID)
+     * Filter 2: 0x00 with mask 0x1F (match broadcast)
+     * MSG_TYPE bits are masked out (0x00 mask) → accept all message types
+     */
+    CAN_Config(CAN_BITRATE,
+               StandardFrame_DoubleFilter,
+               MY_NODE_ID,     /* idCode1: our node ID */
+               0x00,           /* idCode2: broadcast address */
+               0x1F,           /* mask1: match NODE_ID bits exactly  */
+               0x1F);          /* mask2: match NODE_ID=0 exactly */
 }
-
-/// @}
-
-/// @}
-
-/// @}
