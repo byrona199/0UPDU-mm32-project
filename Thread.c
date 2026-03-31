@@ -310,9 +310,9 @@ void Thread_CAN_RX(void const *argument)
         if (flag) {
             flag = 0;
 
-            /* Extract CAN ID from received Peli frame (Standard format) */
-            uint16_t can_id = ((uint16_t)gCanPeliRxMsgBuff.IDHH << 3) |
-                              ((uint16_t)gCanPeliRxMsgBuff.IDHL >> 5);
+            /* CAN_Peli_Receive() already extracts the 11-bit Standard ID
+             * into gCanPeliRxMsgBuff.ID — use it directly. */
+            uint16_t can_id = (uint16_t)gCanPeliRxMsgBuff.ID;
             uint8_t msg_type = CAN_GET_MSG_TYPE(can_id);
             uint8_t node_id  = CAN_GET_NODE_ID(can_id);
 
