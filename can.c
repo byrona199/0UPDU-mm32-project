@@ -304,10 +304,11 @@ void CAN_IRQHandler(void)
  * Filter setup: Accept all Standard frames addressed to MY_NODE_ID or
  * broadcast (NODE_ID=0). Uses mask filter on NODE_ID bits [4:0].
  *
- * Filter ID  = MY_NODE_ID in bits [4:0], MSG_TYPE bits [10:5] = don't care
- * Filter Mask: accept if (rx_id & mask) == (filter_id & mask)
- *   - Bits [10:5] (MSG_TYPE): mask=0 → accept all message types
- *   - Bits [4:0]  (NODE_ID):  mask=0x1F → exact match on NODE_ID
+ * 11-bit CAN ID layout: [MSG_TYPE:10:5][NODE_ID:4:0]
+ *
+ * Filter mask convention: 1 = don't care, 0 = must match (SJA1000).
+ *   mask = 0x7E0 → bits[10:5] (MSG_TYPE) = don't care (accept all types)
+ *                   bits[4:0]  (NODE_ID)  = must match exactly
  *
  * NOTE: Uses double filter to accept both MY_NODE_ID and broadcast (0).
  *============================================================================*/
@@ -315,14 +316,13 @@ void CAN_NVIC_Init(void)
 {
     CAN_GPIO_Config();
     /* 250 kbps, Standard Double Filter:
-     * Filter 1: MY_NODE_ID with mask 0x1F (match only our node ID)
-     * Filter 2: 0x00 with mask 0x1F (match broadcast)
-     * MSG_TYPE bits are masked out (0x00 mask) → accept all message types
+     * Filter 1: MY_NODE_ID, mask 0x7E0 → accept any MSG_TYPE to MY_NODE_ID
+     * Filter 2: broadcast 0x00, mask 0x7E0 → accept any MSG_TYPE to NODE_ID=0
      */
     CAN_Config(CAN_BITRATE,
                StandardFrame_DoubleFilter,
                MY_NODE_ID,     /* idCode1: our node ID */
                0x00,           /* idCode2: broadcast address */
-               0x1F,           /* mask1: match NODE_ID bits exactly  */
-               0x1F);          /* mask2: match NODE_ID=0 exactly */
+               0x7E0,          /* mask1: MSG_TYPE=don't care, NODE_ID=exact match */
+               0x7E0);         /* mask2: MSG_TYPE=don't care, NODE_ID=0 exact match */
 }

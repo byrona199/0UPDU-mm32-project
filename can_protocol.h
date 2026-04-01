@@ -262,7 +262,7 @@ typedef struct {
 
 typedef struct {
     uint8_t  request_type;      /* 0x00 = ALL */
-    uint8_t  reserved[7];
+    uint8_t  reserved[6];       /* payload total must fit 7 bytes */
 } __attribute__((packed)) can_poll_req_t;
 
 #define CAN_POLL_ALL            0x00
