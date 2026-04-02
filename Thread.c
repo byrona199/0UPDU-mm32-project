@@ -4,7 +4,6 @@
  *
  * Thread architecture:
  * - Thread_CAN_RX:        Process incoming CAN frames (POLL_REQ, RELAY_CMD, etc.)
- * - Thread_CAN_Heartbeat: Send periodic heartbeat (5s)
  * - Thread_Metering:      ADC sampling → update metrics snapshot
  * - Thread_UART_outlet_stat: UART meter communication (reserved)
  */
@@ -36,23 +35,19 @@ static void dbg_log(const char *fmt, ...)
  * Configuration
  *============================================================================*/
 #define MAX_OUTLET          48
-#define HEARTBEAT_PERIOD_MS (CAN_HEARTBEAT_INTERVAL_S * 1000)
 
 /*============================================================================
  * Thread Declarations
  *============================================================================*/
 void Thread_CAN_RX(void const *argument);
-void Thread_CAN_Heartbeat(void const *argument);
 void Thread_Metering(void const *argument);
 void Thread_UART_outlet_stat(void const *argument);
 
 osThreadId tid_CAN_RX;
-osThreadId tid_CAN_Heartbeat;
 osThreadId tid_Metering;
 osThreadId tid_UART_outlet_stat;
 
 osThreadDef(Thread_CAN_RX,          osPriorityAboveNormal, 1, 1536);
-osThreadDef(Thread_CAN_Heartbeat,   osPriorityNormal,      1, 512);
 osThreadDef(Thread_Metering,        osPriorityNormal,      1, 1024);
 osThreadDef(Thread_UART_outlet_stat, osPriorityNormal,     1, 1280);
 
@@ -97,10 +92,6 @@ static uint8_t outlet_phase[MAX_OUTLET];
 /** @brief Relay hardware state (actual GPIO) */
 static uint8_t relay_hw_state[MAX_OUTLET];
 
-/** @brief Node health status for heartbeat */
-static uint8_t node_status     = CAN_NODE_STATUS_OK;
-static uint8_t relay_fault_flags = 0;
-
 /*============================================================================
  * Relay GPIO Control
  *============================================================================*/
@@ -139,9 +130,6 @@ int Init_Thread(void)
 
     tid_Metering = osThreadCreate(osThread(Thread_Metering), NULL);
     if (!tid_Metering) return -1;
-
-    tid_CAN_Heartbeat = osThreadCreate(osThread(Thread_CAN_Heartbeat), NULL);
-    if (!tid_CAN_Heartbeat) return -1;
 
     tid_CAN_RX = osThreadCreate(osThread(Thread_CAN_RX), NULL);
     if (!tid_CAN_RX) return -1;
@@ -347,10 +335,6 @@ void Thread_CAN_RX(void const *argument)
                     dbg_log("[CAN_RX]   relay_cmd handled\r\n");
                     break;
 
-                case CAN_MSG_HEARTBEAT:
-                    dbg_log("[CAN_RX] HEARTBEAT from master\r\n");
-                    break;
-
                 case CAN_MSG_CONFIG_WRITE:
                     dbg_log("[CAN_RX] CONFIG_WRITE (TODO)\r\n");
                     break;
@@ -361,27 +345,6 @@ void Thread_CAN_RX(void const *argument)
             }
         }
         osDelay(1);  /* Yield to other threads */
-    }
-}
-
-/*============================================================================
- * Thread_CAN_Heartbeat: send heartbeat every 5 seconds
- *============================================================================*/
-void Thread_CAN_Heartbeat(void const *argument)
-{
-    (void)argument;
-    can_heartbeat_t hb;
-
-    for (;;) {
-        memset(&hb, 0, sizeof(hb));
-        hb.node_status       = node_status;
-        hb.relay_fault_flags = relay_fault_flags;
-
-        osMutexWait(can_mutex, osWaitForever);
-        CAN_SendSingleFrame(CAN_MSG_HEARTBEAT, (const uint8_t *)&hb, sizeof(hb));
-        osMutexRelease(can_mutex);
-
-        osDelay(HEARTBEAT_PERIOD_MS);
     }
 }
 

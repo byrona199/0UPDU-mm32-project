@@ -292,23 +292,21 @@ typedef struct {
  *============================================================================*/
 
 typedef enum {
-    CAN_NODE_OFFLINE = 0,       /* Never connected */
-    CAN_NODE_ONLINE,            /* Normal communication */
-    CAN_NODE_TIMEOUT,           /* 3 missed heartbeats (15s) */
-    CAN_NODE_BUS_OFF,           /* 6 missed heartbeats (30s) */
-    CAN_NODE_RECOVERING         /* Heartbeat received after timeout */
+    CAN_NODE_OFFLINE = 0,       /* Never polled successfully */
+    CAN_NODE_ONLINE,            /* Normal: last poll succeeded */
+    CAN_NODE_TIMEOUT,           /* 2+ consecutive poll misses */
+    CAN_NODE_BUS_OFF            /* 4+ consecutive poll misses; skip polling */
 } can_node_state_t;
 
 /*============================================================================
  * Timing Constants
  *============================================================================*/
 
-#define CAN_HEARTBEAT_INTERVAL_S    5       /* Heartbeat every 5 seconds */
 #define CAN_POLL_INTERVAL_S         5       /* Full poll cycle every 5 seconds */
 #define CAN_POLL_TIMEOUT_MS         500     /* Timeout waiting for node response: must be > burst time (~190ms) */
 #define CAN_REASSEMBLY_TIMEOUT_MS   500     /* Timeout for multi-frame reassembly */
-#define CAN_HEARTBEAT_MISS_TIMEOUT  3       /* Missed HBs before NODE_TIMEOUT */
-#define CAN_HEARTBEAT_MISS_BUSOFF   6       /* Missed HBs before NODE_BUS_OFF */
+#define CAN_POLL_MISS_TIMEOUT       2       /* Consecutive poll misses before NODE_TIMEOUT */
+#define CAN_POLL_MISS_BUSOFF        4       /* Consecutive poll misses before NODE_BUS_OFF */
 #define CAN_WATCHDOG_TIMEOUT_S      10      /* MM32 WDT timeout */
 
 /*============================================================================
