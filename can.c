@@ -262,6 +262,11 @@ void CAN_SendMultiFrame(uint8_t msg_type, const uint8_t *data, uint16_t len)
 
         Send_CANFrame(&tx);
 
+        /* Inter-frame delay: give Linux SocketCAN time to drain the receive FIFO.
+         * Without delay, FlexCAN hardware FIFO (6 slots) overflows when
+         * OUTLET_METRICS sends 76 back-to-back frames, causing seq gaps. */
+        osDelay(2);  /* 2ms: 76 frames → +152ms, total burst ~190ms */
+
         offset += chunk;
         seq = (seq + 1) & CAN_FRAME_SEQ_MASK;
     }

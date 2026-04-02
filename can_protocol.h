@@ -305,7 +305,7 @@ typedef enum {
 
 #define CAN_HEARTBEAT_INTERVAL_S    5       /* Heartbeat every 5 seconds */
 #define CAN_POLL_INTERVAL_S         5       /* Full poll cycle every 5 seconds */
-#define CAN_POLL_TIMEOUT_MS         200     /* Timeout waiting for node response */
+#define CAN_POLL_TIMEOUT_MS         500     /* Timeout waiting for node response: must be > burst time (~190ms) */
 #define CAN_REASSEMBLY_TIMEOUT_MS   500     /* Timeout for multi-frame reassembly */
 #define CAN_HEARTBEAT_MISS_TIMEOUT  3       /* Missed HBs before NODE_TIMEOUT */
 #define CAN_HEARTBEAT_MISS_BUSOFF   6       /* Missed HBs before NODE_BUS_OFF */
