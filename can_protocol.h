@@ -79,13 +79,14 @@ extern "C" {
 
 #define CAN_MSG_RELAY_CMD           0x00    /* Master→Node: relay control */
 #define CAN_MSG_RELAY_ACK           0x01    /* Node→Master: relay ack */
-#define CAN_MSG_HEARTBEAT           0x02    /* Bidirectional: keepalive */
+#define CAN_MSG_CONNECT_REQ         0x02    /* Node→Master: 上電公告 / 心跳 */
 #define CAN_MSG_POLL_REQ            0x03    /* Master→Node: poll request */
 #define CAN_MSG_POWER_METRICS       0x04    /* Node→Master: power data (multi-frame) */
 #define CAN_MSG_OUTLET_STATE        0x05    /* Node→Master: outlet states (multi-frame) */
 #define CAN_MSG_OUTLET_METRICS      0x06    /* Node→Master: per-outlet data (multi-frame) */
 #define CAN_MSG_CONFIG_WRITE        0x07    /* Master→Node: config write */
-#define CAN_MSG_CONFIG_ACK          0x08    /* Node→Master: config ack */
+#define CAN_MSG_CONNECT_ACK         0x09    /* Master→Node: 連線確認 */
+#define CAN_MSG_WHO_IS_ONLINE       0x0A    /* Master→Broadcast(node_id=0): 啟動發現廣播 */
 
 /*============================================================================
  * Transport Header (Byte 0 of every CAN frame)
@@ -212,18 +213,29 @@ typedef struct {
 /* 7 + 3 + 76 = 86 response frames */
 
 /*============================================================================
- * HEARTBEAT Payload (MSG_TYPE 0x02) — Single frame, 8 bytes
+ * CONNECT_REQ Payload (MSG_TYPE 0x02) — Single frame
+ *
+ * MM32 上電後立即發送，並每 CAN_HEARTBEAT_INTERVAL_S 秒重複一次（心跳）。
+ * Master 回覆 CONNECT_ACK。
+ * MM32 未收到 ACK 則每 CAN_CONNECT_RETRY_S 秒重試，最多 3 次。
  *============================================================================*/
 
 typedef struct {
-    uint8_t  node_status;       /* 0=OK, 1=Warning, 2=Error */
-    uint8_t  relay_fault_flags; /* bitfield: bit N = relay group N fault */
+    uint8_t  firmware_version;  /* MM32 韌體版本 */
     uint8_t  reserved[6];
-} __attribute__((packed)) can_heartbeat_t;
+} __attribute__((packed)) can_connect_req_t;
 
-#define CAN_NODE_STATUS_OK      0
-#define CAN_NODE_STATUS_WARNING 1
-#define CAN_NODE_STATUS_ERROR   2
+/*============================================================================
+ * CONNECT_ACK Payload (MSG_TYPE 0x09) — Single frame
+ *============================================================================*/
+
+typedef struct {
+    uint8_t  status;            /* 0 = connected */
+    uint8_t  reserved[6];
+} __attribute__((packed)) can_connect_ack_t;
+
+/* WHO_IS_ONLINE (MSG_TYPE 0x0A, node_id=0): 無 payload，僅 header byte */
+/* MM32 收到後立即重新發送 CONNECT_REQ */
 
 /*============================================================================
  * RELAY_CMD Payload (MSG_TYPE 0x00) — Single frame, 8 bytes
@@ -292,21 +304,20 @@ typedef struct {
  *============================================================================*/
 
 typedef enum {
-    CAN_NODE_OFFLINE = 0,       /* Never polled successfully */
-    CAN_NODE_ONLINE,            /* Normal: last poll succeeded */
-    CAN_NODE_TIMEOUT,           /* 2+ consecutive poll misses */
-    CAN_NODE_BUS_OFF            /* 4+ consecutive poll misses; skip polling */
+    CAN_NODE_OFFLINE = 0,   /* 未連線：等待 CONNECT_REQ，不輪詢 */
+    CAN_NODE_ONLINE,        /* 已連線：正常 10s 輪詢中 */
 } can_node_state_t;
 
 /*============================================================================
  * Timing Constants
  *============================================================================*/
 
-#define CAN_POLL_INTERVAL_S         5       /* Full poll cycle every 5 seconds */
-#define CAN_POLL_TIMEOUT_MS         500     /* Timeout waiting for node response: must be > burst time (~190ms) */
-#define CAN_REASSEMBLY_TIMEOUT_MS   500     /* Timeout for multi-frame reassembly */
-#define CAN_POLL_MISS_TIMEOUT       2       /* Consecutive poll misses before NODE_TIMEOUT */
-#define CAN_POLL_MISS_BUSOFF        4       /* Consecutive poll misses before NODE_BUS_OFF */
+#define CAN_POLL_INTERVAL_S         10      /* ONLINE 節點輪詢週期（秒）*/
+#define CAN_POLL_TIMEOUT_MS         500     /* 等待節點完整 burst 的超時 */
+#define CAN_REASSEMBLY_TIMEOUT_MS   500     /* 多幀重組超時 */
+#define CAN_POLL_MISS_OFFLINE       3       /* 連續幾次無回應後設為 OFFLINE，停止輪詢 */
+#define CAN_CONNECT_RETRY_S         30      /* MM32 韌體：收到 ACK 前每 30s 發送一次 CONNECT_REQ */
+#define CAN_HEARTBEAT_INTERVAL_S    300     /* MM32 韌體：定期心跳間隔（5 分鐘）*/
 #define CAN_WATCHDOG_TIMEOUT_S      10      /* MM32 WDT timeout */
 
 /*============================================================================

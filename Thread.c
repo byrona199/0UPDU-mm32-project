@@ -2,9 +2,16 @@
  * @file Thread.c
  * @brief RTOS threads for MM32 PDU node.
  *
+ * Node liveness is entirely poll-driven: the Linux master (can-meter)
+ * sends POLL_REQ every ~5 s. This node responds with a fixed burst:
+ *   POWER_METRICS → OUTLET_STATE → OUTLET_METRICS
+ * No heartbeat is sent. The master detects failure by counting
+ * consecutive poll timeouts (miss ≥ 2 → TIMEOUT, miss ≥ 4 → BUS_OFF).
+ *
  * Thread architecture:
- * - Thread_CAN_RX:        Process incoming CAN frames (POLL_REQ, RELAY_CMD, etc.)
- * - Thread_Metering:      ADC sampling → update metrics snapshot
+ * - Thread_CAN_RX:           Receive POLL_REQ / RELAY_CMD / CONNECT_ACK / WHO_IS_ONLINE
+ * - Thread_CAN_Connect:     Send CONNECT_REQ on boot (30s) and heartbeat (5 min)
+ * - Thread_Metering:         ADC sampling → update shared metrics snapshot
  * - Thread_UART_outlet_stat: UART meter communication (reserved)
  */
 
@@ -40,14 +47,17 @@ static void dbg_log(const char *fmt, ...)
  * Thread Declarations
  *============================================================================*/
 void Thread_CAN_RX(void const *argument);
+void Thread_CAN_Connect(void const *argument);
 void Thread_Metering(void const *argument);
 void Thread_UART_outlet_stat(void const *argument);
 
 osThreadId tid_CAN_RX;
+osThreadId tid_CAN_Connect;
 osThreadId tid_Metering;
 osThreadId tid_UART_outlet_stat;
 
 osThreadDef(Thread_CAN_RX,          osPriorityAboveNormal, 1, 1536);
+osThreadDef(Thread_CAN_Connect,     osPriorityNormal,      1, 512);
 osThreadDef(Thread_Metering,        osPriorityNormal,      1, 1024);
 osThreadDef(Thread_UART_outlet_stat, osPriorityNormal,     1, 1280);
 
@@ -62,6 +72,18 @@ osMutexId can_mutex;
 osMutexDef(can_mutex);
 osMutexId data_mutex;
 osMutexDef(data_mutex);
+
+/*============================================================================
+ * Connection State (managed by Thread_CAN_Connect, flags set by Thread_CAN_RX)
+ *============================================================================*/
+typedef enum {
+    CONN_DISCONNECTED = 0,  /* 未收到 ACK，每 30s 發送 CONNECT_REQ */
+    CONN_CONNECTED          /* 已收到 ACK，每 5 分鐘心跳 */
+} conn_state_t;
+
+static volatile conn_state_t g_conn_state        = CONN_DISCONNECTED;
+static volatile uint8_t      g_who_is_online_flag = 0; /* WHO_IS_ONLINE 收到時由 CAN_RX 設 1 */
+static volatile uint8_t      g_ack_received_flag  = 0; /* CONNECT_ACK 收到時由 CAN_RX 設 1 */
 
 extern u8 sSendBuf[SENDBUFLENGTH];
 extern u8 sRecvBuf[RECVBUFLENGTH];
@@ -109,6 +131,26 @@ static void relay_set(uint8_t outlet_id, uint8_t on)
 }
 
 /*============================================================================
+ * Send CONNECT_REQ to master
+ *
+ * 用於上電公告與心跳。can-meter 收到後回覆 CONNECT_ACK。
+ *============================================================================*/
+static void send_connect_req(void)
+{
+    can_connect_req_t req;
+    memset(&req, 0, sizeof(req));
+    req.firmware_version = 1;  /* TODO: replace with actual firmware version */
+
+    osMutexWait(can_mutex, osWaitForever);
+    CAN_SendSingleFrame(CAN_MSG_CONNECT_REQ, (const uint8_t *)&req, sizeof(req));
+    osMutexRelease(can_mutex);
+
+    dbg_log("[CONNECT] CONNECT_REQ sent (node=%u state=%s)\r\n",
+            MY_NODE_ID,
+            (g_conn_state == CONN_CONNECTED) ? "CONNECTED" : "DISCONNECTED");
+}
+
+/*============================================================================
  * Init_Thread: create all RTOS threads
  *============================================================================*/
 int Init_Thread(void)
@@ -133,6 +175,9 @@ int Init_Thread(void)
 
     tid_CAN_RX = osThreadCreate(osThread(Thread_CAN_RX), NULL);
     if (!tid_CAN_RX) return -1;
+
+    tid_CAN_Connect = osThreadCreate(osThread(Thread_CAN_Connect), NULL);
+    if (!tid_CAN_Connect) return -1;
 
     return 0;
 }
@@ -319,6 +364,18 @@ void Thread_CAN_RX(void const *argument)
                                    gCanPeliRxMsgBuff.DLC - 1 : 0;
 
             switch (msg_type) {
+                case CAN_MSG_CONNECT_ACK:
+                    /* Master 確認連線：通知 Thread_CAN_Connect 切換心跳模式 */
+                    dbg_log("[CAN_RX] CONNECT_ACK received\r\n");
+                    g_ack_received_flag = 1;
+                    break;
+
+                case CAN_MSG_WHO_IS_ONLINE:
+                    /* Master 廣播發現（node_id=0）：立即觸發送出 CONNECT_REQ */
+                    dbg_log("[CAN_RX] WHO_IS_ONLINE received, triggering CONNECT_REQ\r\n");
+                    g_who_is_online_flag = 1;
+                    break;
+
                 case CAN_MSG_POLL_REQ:
                     dbg_log("[CAN_RX] POLL_REQ -> sending burst\r\n");
                     send_power_metrics();
@@ -432,5 +489,58 @@ void Thread_UART_outlet_stat(void const *argument)
     for (;;) {
         /* TODO: UART communication with external meter sub-boards */
         osDelay(500);
+    }
+}
+
+/*============================================================================
+ * Thread_CAN_Connect: 管理 CONNECT_REQ 發送時機
+ *
+ * 未連線狀態：啟動後立即發送，此後每 30s 發送一次直到收到 ACK。
+ * 已連線狀態：每 5 分鐘發送一次心跳。
+ * WHO_IS_ONLINE 收到時不論狀態都立即發送 CONNECT_REQ。
+ *============================================================================*/
+void Thread_CAN_Connect(void const *argument)
+{
+    uint32_t interval_ms;
+    uint32_t elapsed_ms;
+    (void)argument;
+
+    dbg_log("[CONNECT] Thread started, sending initial CONNECT_REQ\r\n");
+
+    /* 啟動後立即發送 */
+    send_connect_req();
+
+    for (;;) {
+        elapsed_ms  = 0;
+        interval_ms = (g_conn_state == CONN_CONNECTED)
+                      ? ((uint32_t)CAN_HEARTBEAT_INTERVAL_S * 1000u)  /* 300s */
+                      : ((uint32_t)CAN_CONNECT_RETRY_S     * 1000u);  /* 30s  */
+
+        /* 以 100ms 為最小察測單位，對強影響可忽略 */
+        while (elapsed_ms < interval_ms) {
+            osDelay(100);
+            elapsed_ms += 100;
+
+            /* CONNECT_ACK 收到：切換心跳模式，重置計時 */
+            if (g_ack_received_flag) {
+                g_ack_received_flag = 0;
+                if (g_conn_state != CONN_CONNECTED) {
+                    g_conn_state = CONN_CONNECTED;
+                    dbg_log("[CONNECT] ACK received, switching to heartbeat (%us)\r\n",
+                            CAN_HEARTBEAT_INTERVAL_S);
+                }
+                elapsed_ms  = 0;
+                interval_ms = (uint32_t)CAN_HEARTBEAT_INTERVAL_S * 1000u;
+            }
+
+            /* WHO_IS_ONLINE 收到：不論狀態立即發送 */
+            if (g_who_is_online_flag) {
+                g_who_is_online_flag = 0;
+                dbg_log("[CONNECT] WHO_IS_ONLINE: sending CONNECT_REQ immediately\r\n");
+                break;
+            }
+        }
+
+        send_connect_req();
     }
 }
