@@ -42,6 +42,7 @@ static void dbg_log(const char *fmt, ...)
  * Configuration
  *============================================================================*/
 #define MAX_OUTLET          48
+#define CONNECT_ACK_MISS_MAX 2
 
 /*============================================================================
  * Thread Declarations
@@ -503,12 +504,15 @@ void Thread_CAN_Connect(void const *argument)
 {
     uint32_t interval_ms;
     uint32_t elapsed_ms;
+    uint8_t waiting_ack = 0;
+    uint8_t missed_ack_count = 0;
     (void)argument;
 
     dbg_log("[CONNECT] Thread started, sending initial CONNECT_REQ\r\n");
 
     /* 啟動後立即發送 */
     send_connect_req();
+    waiting_ack = 1;
 
     for (;;) {
         elapsed_ms  = 0;
@@ -524,6 +528,8 @@ void Thread_CAN_Connect(void const *argument)
             /* CONNECT_ACK 收到：切換心跳模式，重置計時 */
             if (g_ack_received_flag) {
                 g_ack_received_flag = 0;
+                waiting_ack = 0;
+                missed_ack_count = 0;
                 if (g_conn_state != CONN_CONNECTED) {
                     g_conn_state = CONN_CONNECTED;
                     dbg_log("[CONNECT] ACK received, switching to heartbeat (%us)\r\n",
@@ -541,6 +547,20 @@ void Thread_CAN_Connect(void const *argument)
             }
         }
 
+        /* 已連線狀態下，若上一個 CONNECT_REQ 在整個心跳週期內都沒收到 ACK，
+         * 視為連線遺失，回切為 DISCONNECTED（改為 30s 重試）。 */
+        if (g_conn_state == CONN_CONNECTED && waiting_ack) {
+            if (missed_ack_count < 0xFF) {
+                missed_ack_count++;
+            }
+            if (missed_ack_count >= CONNECT_ACK_MISS_MAX) {
+                g_conn_state = CONN_DISCONNECTED;
+                dbg_log("[CONNECT] ACK timeout, switching to DISCONNECTED (retry %us)\r\n",
+                        CAN_CONNECT_RETRY_S);
+            }
+        }
+
         send_connect_req();
+        waiting_ack = 1;
     }
 }
