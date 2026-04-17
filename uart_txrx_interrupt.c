@@ -19,6 +19,7 @@
 
 // Files includes
 #include "uart_txrx_interrupt.h"
+#include "modbus_rtu.h"
 //#include "Driver_USART.h"
 
 
@@ -185,49 +186,36 @@ void UART2_NVIC_Init(u32 baudrate)
 /// @param  None.
 /// @retval None.
 ////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+/// @brief  UART1 Interrupt Handler — Modbus RTU RX only.
+///         Writes received bytes into the Modbus ring buffer (mb_rx_buf).
+///         TX is handled by polling in modbus_rtu.c.
+/// @note   This replaces the original buggy handler that referenced UART2.
+/// @param  None.
+/// @retval None.
+////////////////////////////////////////////////////////////////////////////////
 void UART1_IRQHandler(void)
 {
-    u8 recvbyte;
-    UART_TypeDef* UARTx;
-    UART_SendIt_Typedef* pUARTxSendStruct;
-    UART_RecvIt_Typedef* pUARTxRecvStruct;
+    uint8_t byte;
 
-    UARTx = UART2;
-    pUARTxSendStruct = &send_struct;
-    pUARTxRecvStruct = &recv_struct;
-    // Send packet
-    if (UART_GetITStatus(UARTx, UART_IT_TXIEN) != RESET) {
-        UART_ClearITPendingBit(UARTx, UART_IT_TXIEN);
-        if(pUARTxSendStruct->UART_SendComplete == false) {
-            if( pUARTxSendStruct->UART_SendLen <= pUARTxSendStruct->UART_SendRealCnt) {
-                pUARTxSendStruct->UART_SendLen = 0;
-                UART_ITConfig(UARTx, UART_IT_TXIEN, DISABLE);
-                while (!UART_GetFlagStatus(UARTx, UART_CSR_TXC));
-                pUARTxSendStruct->UART_SendComplete = true;
-            }
-            else {
-                if(pUARTxSendStruct->UART_SendRealCnt < SENDBUFLENGTH) {
-                    UART_SendData(UARTx, *(u8*)(pUARTxSendStruct->UART_SendBufferAddress + pUARTxSendStruct->UART_SendRealCnt));
-                    pUARTxSendStruct->UART_SendRealCnt++;
-                }
+    /* RX interrupt */
+    if (UART_GetITStatus(UART1, UART_ISR_RX) != RESET) {
+        UART_ClearITPendingBit(UART1, UART_ISR_RX);
+        byte = (uint8_t)UART_ReceiveData(UART1);
+
+        /* Write to Modbus ring buffer (drop byte if full) */
+        {
+            uint16_t next = (mb_rx_head + 1) % MB_RX_BUF_SIZE;
+            if (next != mb_rx_tail) {
+                mb_rx_buf[mb_rx_head] = byte;
+                mb_rx_head = next;
             }
         }
     }
-    // Recv packet
-    if (UART_GetITStatus(UARTx, UART_ISR_RX) != RESET) {
-        UART_ClearITPendingBit(UARTx, UART_ISR_RX);
-        recvbyte = UART_ReceiveData(UARTx);
-        if(pUARTxRecvStruct->UART_RecvComplete == false) {
-            if(pUARTxRecvStruct->UART_RecvRealCnt < RECVBUFLENGTH) {
-                *(u8*)(pUARTxRecvStruct->UART_RecvBufferAddress + pUARTxRecvStruct->UART_RecvRealCnt) = recvbyte;
-                pUARTxRecvStruct->UART_RecvRealCnt++;
-                //if( pUARTxRecvStruct->UART_RecvLen == pUARTxRecvStruct->UART_RecvRealCnt) {
-                if( recvbyte == 0x20) { // if recieve space(0x20) recv end
-                    pUARTxRecvStruct->UART_RecvLen = 0;
-                    pUARTxRecvStruct->UART_RecvComplete = true;
-                }
-            }
-        }
+
+    /* TX interrupt — should not fire (we only enabled RXIEN), clear if it does */
+    if (UART_GetITStatus(UART1, UART_IT_TXIEN) != RESET) {
+        UART_ClearITPendingBit(UART1, UART_IT_TXIEN);
     }
 }
 void UART2_IRQHandler(void)

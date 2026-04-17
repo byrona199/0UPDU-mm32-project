@@ -17,6 +17,7 @@
 
 #include "uart_txrx_interrupt.h"
 #include "can.h"
+#include "modbus_meter.h"
 #include <stdio.h>
 #include <stdarg.h>
 
@@ -25,7 +26,7 @@
  *============================================================================*/
 static char dbg_buf[256];
 
-static void dbg_log(const char *fmt, ...)
+void dbg_log(const char *fmt, ...)
 {
     va_list ap;
     int len;
@@ -60,7 +61,7 @@ osThreadId tid_UART_outlet_stat;
 osThreadDef(Thread_CAN_RX,          osPriorityAboveNormal, 1, 1536);
 osThreadDef(Thread_CAN_Connect,     osPriorityNormal,      1, 512);
 osThreadDef(Thread_Metering,        osPriorityNormal,      1, 1024);
-osThreadDef(Thread_UART_outlet_stat, osPriorityNormal,     1, 1280);
+osThreadDef(Thread_UART_outlet_stat, osPriorityNormal,     1, 2048);
 
 /*============================================================================
  * Synchronization
@@ -116,19 +117,55 @@ static uint8_t outlet_phase[MAX_OUTLET];
 static uint8_t relay_hw_state[MAX_OUTLET];
 
 /*============================================================================
- * Relay GPIO Control
+ * Relay Command Queue
+ *
+ * CAN_RX thread pushes commands; UART_outlet_stat thread consumes them
+ * and sends Modbus FC06 to the metering board.
  *============================================================================*/
+#define RELAY_QUEUE_SIZE  16
 
-/** @brief Map outlet ID to GPIO pin. Placeholder — must match PCB routing. */
-static void relay_set(uint8_t outlet_id, uint8_t on)
+typedef struct {
+    uint8_t  command;       /* CAN_RELAY_CMD_* */
+    uint8_t  outlet_id;     /* 0-47 for single, ignored for ALL_ON/ALL_OFF */
+    uint16_t delay;         /* delay in units of 100ms */
+} relay_queue_item_t;
+
+static relay_queue_item_t relay_queue[RELAY_QUEUE_SIZE];
+static volatile uint8_t   relay_q_head = 0;
+static volatile uint8_t   relay_q_tail = 0;
+static osMutexId           relay_q_mutex;
+osMutexDef(relay_q_mutex);
+
+/** @brief Push a relay command (called from CAN_RX thread). Returns 0 on success. */
+static int relay_queue_push(uint8_t command, uint8_t outlet_id, uint16_t delay)
 {
-    if (outlet_id >= MAX_OUTLET) return;
+    uint8_t next;
+    int ret = -1;
+    osMutexWait(relay_q_mutex, osWaitForever);
+    next = (relay_q_head + 1) % RELAY_QUEUE_SIZE;
+    if (next != relay_q_tail) {
+        relay_queue[relay_q_head].command   = command;
+        relay_queue[relay_q_head].outlet_id = outlet_id;
+        relay_queue[relay_q_head].delay     = delay;
+        relay_q_head = next;
+        ret = 0;
+    }
+    osMutexRelease(relay_q_mutex);
+    return ret;
+}
 
-    /* TODO: Map outlet_id to actual GPIO port/pin per PCB layout.
-     * Current board has 12 relays wired to specific pins (see main.c).
-     * For full 48-outlet, this will be expanded with shift registers or I2C expanders. */
-    relay_hw_state[outlet_id] = on ? 1 : 0;
-    outlet_state[outlet_id] = on ? 1 : 0;
+/** @brief Pop a relay command (called from UART_outlet_stat thread). Returns 0 on success. */
+static int relay_queue_pop(relay_queue_item_t *item)
+{
+    int ret = -1;
+    osMutexWait(relay_q_mutex, osWaitForever);
+    if (relay_q_head != relay_q_tail) {
+        *item = relay_queue[relay_q_tail];
+        relay_q_tail = (relay_q_tail + 1) % RELAY_QUEUE_SIZE;
+        ret = 0;
+    }
+    osMutexRelease(relay_q_mutex);
+    return ret;
 }
 
 /*============================================================================
@@ -162,6 +199,7 @@ int Init_Thread(void)
     uart_mutex = osMutexCreate(osMutex(uart_mutex));
     can_mutex  = osMutexCreate(osMutex(can_mutex));
     data_mutex = osMutexCreate(osMutex(data_mutex));
+    relay_q_mutex = osMutexCreate(osMutex(relay_q_mutex));
 
     /* Initialize default outlet phase mapping (all L1) */
     for (i = 0; i < MAX_OUTLET; i++) {
@@ -255,12 +293,14 @@ static void send_outlet_metrics(void)
 
 /*============================================================================
  * Handle RELAY_CMD from master
+ *
+ * Pushes command to relay queue for async Modbus execution.
+ * Sends optimistic RELAY_ACK immediately (does not wait for Modbus response).
  *============================================================================*/
 static void handle_relay_cmd(const uint8_t *data, uint8_t len)
 {
     can_relay_cmd_t cmd;
     can_relay_ack_t ack;
-    uint8_t i;
 
     if (len < sizeof(can_relay_cmd_t)) return;
     memcpy(&cmd, data, sizeof(cmd));
@@ -270,59 +310,16 @@ static void handle_relay_cmd(const uint8_t *data, uint8_t len)
     ack.result    = CAN_RELAY_ACK_OK;
     memset(ack.reserved, 0, sizeof(ack.reserved));
 
-    switch (cmd.command) {
-        case CAN_RELAY_CMD_OFF:
-            if (cmd.outlet_id < MAX_OUTLET) {
-                relay_set(cmd.outlet_id, 0);
-            } else {
-                ack.result = CAN_RELAY_ACK_FAIL;
-            }
-            break;
+    dbg_log("[RELAY] cmd=%u outlet=%u delay=%u\r\n",
+            cmd.command, cmd.outlet_id, cmd.delay);
 
-        case CAN_RELAY_CMD_ON:
-            if (cmd.outlet_id < MAX_OUTLET) {
-                if (cmd.delay > 0) {
-                    /* Delayed ON: delay is in units of 100ms */
-                    osDelay(cmd.delay * (CAN_SCALE_DELAY));
-                }
-                relay_set(cmd.outlet_id, 1);
-            } else {
-                ack.result = CAN_RELAY_ACK_FAIL;
-            }
-            break;
-
-        case CAN_RELAY_CMD_CYCLE:
-            if (cmd.outlet_id < MAX_OUTLET) {
-                relay_set(cmd.outlet_id, 0);
-                if (cmd.delay > 0) {
-                    osDelay(cmd.delay * (CAN_SCALE_DELAY));
-                } else {
-                    osDelay(1000);  /* default 1s off */
-                }
-                relay_set(cmd.outlet_id, 1);
-            } else {
-                ack.result = CAN_RELAY_ACK_FAIL;
-            }
-            break;
-
-        case CAN_RELAY_CMD_ALL_OFF:
-            for (i = 0; i < MAX_OUTLET; i++) {
-                relay_set(i, 0);
-            }
-            break;
-
-        case CAN_RELAY_CMD_ALL_ON:
-            for (i = 0; i < MAX_OUTLET; i++) {
-                relay_set(i, 1);
-            }
-            break;
-
-        default:
-            ack.result = CAN_RELAY_ACK_FAIL;
-            break;
+    /* Push to queue; on failure (queue full), report FAIL */
+    if (relay_queue_push(cmd.command, cmd.outlet_id, cmd.delay) != 0) {
+        dbg_log("[RELAY] Queue full!\r\n");
+        ack.result = CAN_RELAY_ACK_FAIL;
     }
 
-    /* Send RELAY_ACK */
+    /* Send RELAY_ACK immediately (optimistic) */
     osMutexWait(can_mutex, osWaitForever);
     CAN_SendSingleFrame(CAN_MSG_RELAY_ACK, (const uint8_t *)&ack, sizeof(ack));
     osMutexRelease(can_mutex);
@@ -407,88 +404,177 @@ void Thread_CAN_RX(void const *argument)
 }
 
 /*============================================================================
- * Thread_Metering: ADC sampling → update metrics snapshot
+ * Thread_Metering: Reserved for future ADC sampling
  *
- * This thread reads the ADC/meter IC data and updates the shared
- * metrics arrays. Currently uses placeholder values for testing.
+ * Metering data is now populated by Thread_UART_outlet_stat via Modbus.
+ * This thread is kept as a placeholder for local ADC / meter IC reads.
  *============================================================================*/
 void Thread_Metering(void const *argument)
 {
     (void)argument;
-    uint8_t i;
-    static uint32_t energy_acc = 0;  /* simulated energy accumulator */
 
-    dbg_log("[METER] Thread started, filling fake data\r\n");
+    dbg_log("[METER] Thread started (placeholder, data from Modbus)\r\n");
 
     for (;;) {
-        energy_acc += 10;  /* +0.10 kWh per cycle */
-
-        osMutexWait(data_mutex, osWaitForever);
-
-        /*--- Fake input power metrics ---*/
-        frequency_fp = 6000;   /* 60.00 Hz */
-        phase_type   = 1;      /* three-phase */
-
-        /* Total */
-        phase_metrics[0].current = 1520;   /* 15.20 A */
-        phase_metrics[0].voltage = 2200;   /* 220.0 V */
-        phase_metrics[0].power   = 3344;   /* 3344 W  */
-        phase_metrics[0].pf      = 98;     /* 0.98    */
-        phase_metrics[0].energy  = energy_acc;
-
-        /* L1 */
-        phase_metrics[1].current = 520;    /* 5.20 A  */
-        phase_metrics[1].voltage = 2201;   /* 220.1 V */
-        phase_metrics[1].power   = 1144;   /* 1144 W  */
-        phase_metrics[1].pf      = 99;
-        phase_metrics[1].energy  = energy_acc / 3;
-
-        /* L2 */
-        phase_metrics[2].current = 480;    /* 4.80 A  */
-        phase_metrics[2].voltage = 2198;   /* 219.8 V */
-        phase_metrics[2].power   = 1055;   /* 1055 W  */
-        phase_metrics[2].pf      = 97;
-        phase_metrics[2].energy  = energy_acc / 3;
-
-        /* L3 */
-        phase_metrics[3].current = 510;    /* 5.10 A  */
-        phase_metrics[3].voltage = 2205;   /* 220.5 V */
-        phase_metrics[3].power   = 1125;   /* 1125 W  */
-        phase_metrics[3].pf      = 99;
-        phase_metrics[3].energy  = energy_acc / 3;
-
-        /*--- Fake per-outlet metrics (first 12 outlets active) ---*/
-        for (i = 0; i < MAX_OUTLET; i++) {
-            if (i < 12) {
-                outlet_metrics[i].current = 100 + i * 20;   /* 1.00-1.22 A */
-                outlet_metrics[i].voltage = 2200;
-                outlet_metrics[i].power   = 220 + i * 5;
-                outlet_metrics[i].pf      = 95 + (i % 6);
-                outlet_metrics[i].energy  = energy_acc / 12;
-                outlet_state[i] = 1;   /* ON */
-                outlet_phase[i] = i % 3;  /* round-robin L1/L2/L3 */
-            } else {
-                memset(&outlet_metrics[i], 0, sizeof(can_metrics_t));
-                outlet_state[i] = 0;   /* OFF */
-                outlet_phase[i] = 0;
-            }
-        }
-
-        osMutexRelease(data_mutex);
-
-        osDelay(100);  /* 10 Hz sampling rate */
+        /* TODO: If local ADC/meter IC is needed in the future, add here */
+        osDelay(1000);
     }
 }
 
 /*============================================================================
- * Thread_UART_outlet_stat: UART meter board communication (reserved)
+ * Process pending relay commands from the queue via Modbus
+ *============================================================================*/
+static void process_relay_queue(void)
+{
+    relay_queue_item_t item;
+    meter_outlet_map_t map;
+    uint8_t i;
+
+    while (relay_queue_pop(&item) == 0) {
+        switch (item.command) {
+            case CAN_RELAY_CMD_OFF:
+                if (item.outlet_id < MAX_OUTLET) {
+                    meter_outlet_to_board(item.outlet_id, &map);
+                    meter_set_relay(map.slave_id, map.channel, 0);
+                }
+                break;
+
+            case CAN_RELAY_CMD_ON:
+                if (item.outlet_id < MAX_OUTLET) {
+                    if (item.delay > 0) {
+                        osDelay(item.delay * CAN_SCALE_DELAY);
+                    }
+                    meter_outlet_to_board(item.outlet_id, &map);
+                    meter_set_relay(map.slave_id, map.channel, 1);
+                }
+                break;
+
+            case CAN_RELAY_CMD_CYCLE:
+                if (item.outlet_id < MAX_OUTLET) {
+                    meter_outlet_to_board(item.outlet_id, &map);
+                    meter_set_relay(map.slave_id, map.channel, 0);
+                    if (item.delay > 0) {
+                        osDelay(item.delay * CAN_SCALE_DELAY);
+                    } else {
+                        osDelay(1000);
+                    }
+                    meter_set_relay(map.slave_id, map.channel, 1);
+                }
+                break;
+
+            case CAN_RELAY_CMD_ALL_OFF:
+                for (i = 0; i < MAX_OUTLET; i++) {
+                    meter_outlet_to_board(i, &map);
+                    meter_set_relay(map.slave_id, map.channel, 0);
+                }
+                break;
+
+            case CAN_RELAY_CMD_ALL_ON:
+                for (i = 0; i < MAX_OUTLET; i++) {
+                    meter_outlet_to_board(i, &map);
+                    meter_set_relay(map.slave_id, map.channel, 1);
+                }
+                break;
+
+            default:
+                dbg_log("[RELAY] Unknown cmd=%u\r\n", item.command);
+                break;
+        }
+    }
+}
+
+/*============================================================================
+ * Thread_UART_outlet_stat: Modbus RTU polling loop
+ *
+ * Polls each metering board (slave ID 2..13) via RS-485 Modbus:
+ *   1. Process any pending relay commands from the queue
+ *   2. Read all 38 registers (FC04) from each board
+ *   3. Convert and store into shared outlet_metrics[]/outlet_state[]
+ *   4. Aggregate into phase_metrics[] totals
  *============================================================================*/
 void Thread_UART_outlet_stat(void const *argument)
 {
     (void)argument;
+    uint8_t board;
+    uint8_t ch;
+    uint8_t outlet_id;
+    meter_board_t board_data;
+    can_metrics_t can_ch;
+    int rc;
+
+    /* Aggregation accumulators */
+    uint32_t total_current;
+    uint32_t total_power;
+    uint32_t total_energy;
+
+    dbg_log("[MODBUS] Thread started, polling %u boards\r\n", METER_BOARD_COUNT);
+
+    /* Wait a bit for metering boards to be ready after power-on */
+    osDelay(2000);
 
     for (;;) {
-        /* TODO: UART communication with external meter sub-boards */
+        /* Process relay commands first (high priority) */
+        process_relay_queue();
+
+        /* Reset aggregation */
+        total_current = 0;
+        total_power   = 0;
+        total_energy  = 0;
+
+        /* Poll each board */
+        for (board = 0; board < METER_BOARD_COUNT; board++) {
+            uint8_t slave_id = board + METER_SLAVE_ID_BASE;
+
+            /* Check for relay commands between boards */
+            process_relay_queue();
+
+            rc = meter_read_all(slave_id, &board_data);
+            if (rc != MB_OK) {
+                /* Board offline or error — skip this board */
+                dbg_log("[MODBUS] Board %u (slave %u) offline\r\n", board, slave_id);
+                continue;
+            }
+
+            /* Update shared data for each channel */
+            osMutexWait(data_mutex, osWaitForever);
+
+            /* Store frequency from first successful board */
+            if (board_data.frequency > 0) {
+                frequency_fp = board_data.frequency;
+            }
+
+            for (ch = 0; ch < METER_CHANNELS_PER_BOARD; ch++) {
+                outlet_id = board * METER_CHANNELS_PER_BOARD + ch;
+                if (outlet_id >= MAX_OUTLET) break;
+
+                /* Convert 1084 data to CAN format */
+                meter_channel_to_can(&board_data.channels[ch], &can_ch);
+                outlet_metrics[outlet_id] = can_ch;
+
+                /* Update outlet state from relay state bits */
+                outlet_state[outlet_id] = (board_data.relay_state >> ch) & 0x01;
+
+                /* Accumulate totals */
+                total_current += can_ch.current;
+                total_power   += can_ch.power;
+                total_energy  += can_ch.energy;
+            }
+
+            osMutexRelease(data_mutex);
+        }
+
+        /* Update total phase metrics (simplified: all outlets summed as total) */
+        osMutexWait(data_mutex, osWaitForever);
+        phase_type = 0;  /* TODO: set from configuration */
+        phase_metrics[0].current = (uint16_t)(total_current > 0xFFFF ? 0xFFFF : total_current);
+        phase_metrics[0].voltage = outlet_metrics[0].voltage;  /* Use first outlet's voltage */
+        phase_metrics[0].power   = (uint16_t)(total_power > 0xFFFF ? 0xFFFF : total_power);
+        phase_metrics[0].pf      = 0;   /* TODO: calculate weighted average PF */
+        phase_metrics[0].energy  = (uint32_t)total_energy;
+        osMutexRelease(data_mutex);
+
+        /* Inter-poll delay: remaining time in 10s cycle.
+         * Each board takes ~150ms, 12 boards ≈ 1.8s. Sleep the rest. */
         osDelay(500);
     }
 }

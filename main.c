@@ -7,6 +7,7 @@
 #include "uart_txrx_interrupt.h"
 #include "can.h"
 #include "iwdg.h"
+#include "modbus_rtu.h"
 #include  <stdio.h>
 
 extern int Init_Thread (void);
@@ -25,6 +26,9 @@ int main (void) {
     // Initial uart
     UART2_NVIC_Init(115200);
 	//UART1_NVIC_Init(115200);
+
+    // Initial Modbus RTU on UART1 (RS-485, 9600 baud)
+    modbus_init();
 
     // Initial CAN BUS
     CAN_NVIC_Init();
@@ -61,7 +65,7 @@ void Peripheral_gpio_init()
     // Relay 5  PA5
     // Relay 6  PA4
     // Relay 7  PB2
-    // Relay 8  PA8
+    // Relay 8  PA8 -- now used as RS-485 DE pin (modbus_init handles it)
     // Relay 9  PA11
     // Relay 10 PA12
     // Relay 11 PA15
@@ -74,7 +78,7 @@ void Peripheral_gpio_init()
 
     GPIO_StructInit(&GPIO_InitStructure);
 
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1 | GPIO_Pin_4 | GPIO_Pin_5 | GPIO_Pin_6 | GPIO_Pin_7 | GPIO_Pin_8 | GPIO_Pin_11 | GPIO_Pin_12 | GPIO_Pin_15;
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1 | GPIO_Pin_4 | GPIO_Pin_5 | GPIO_Pin_6 | GPIO_Pin_7 | GPIO_Pin_11 | GPIO_Pin_12 | GPIO_Pin_15;
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
     GPIO_Init(GPIOA, &GPIO_InitStructure);
