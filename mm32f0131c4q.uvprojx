@@ -409,6 +409,16 @@
               <FileType>1</FileType>
               <FilePath>.\can.c</FilePath>
             </File>
+            <File>
+              <FileName>modbus_meter.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\modbus_meter.c</FilePath>
+            </File>
+            <File>
+              <FileName>modbus_rtu.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\modbus_rtu.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
