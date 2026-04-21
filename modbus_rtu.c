@@ -261,17 +261,17 @@ void modbus_init(void)
 }
 
 /*============================================================================
- * modbus_read_input_regs (FC04)
+ * modbus_read_regs — Read Registers (FC03 Holding / FC04 Input)
  *
  * Request frame (8 bytes):
- *   [slave_id] [0x04] [start_hi] [start_lo] [qty_hi] [qty_lo] [crc_lo] [crc_hi]
+ *   [slave_id] [FC] [start_hi] [start_lo] [qty_hi] [qty_lo] [crc_lo] [crc_hi]
  *
  * Response frame (3 + 2*N + 2 bytes):
- *   [slave_id] [0x04] [byte_count] [reg0_hi] [reg0_lo] ... [crc_lo] [crc_hi]
+ *   [slave_id] [FC] [byte_count] [reg0_hi] [reg0_lo] ... [crc_lo] [crc_hi]
  *============================================================================*/
 
-int modbus_read_input_regs(uint8_t slave_id, uint16_t start_reg,
-                           uint16_t num_regs, uint16_t *out_regs)
+int modbus_read_regs(uint8_t slave_id, uint8_t fc, uint16_t start_reg,
+                     uint16_t num_regs, uint16_t *out_regs)
 {
     uint8_t req[8];
     uint8_t resp[256];
@@ -283,7 +283,7 @@ int modbus_read_input_regs(uint8_t slave_id, uint16_t start_reg,
 
     /* Build request */
     req[0] = slave_id;
-    req[1] = MB_FC_READ_INPUT_REGS;
+    req[1] = fc;
     req[2] = (uint8_t)(start_reg >> 8);
     req[3] = (uint8_t)(start_reg & 0xFF);
     req[4] = (uint8_t)(num_regs >> 8);
@@ -337,8 +337,8 @@ int modbus_read_input_regs(uint8_t slave_id, uint16_t start_reg,
         }
 
         /* Validate function code */
-        if (resp[1] != MB_FC_READ_INPUT_REGS) {
-            dbg_log("[MB] Bad FC: expected 0x04 got 0x%02X\r\n", resp[1]);
+        if (resp[1] != fc) {
+            dbg_log("[MB] Bad FC: expected 0x%02X got 0x%02X\r\n", fc, resp[1]);
             continue;
         }
 

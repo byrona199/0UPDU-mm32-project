@@ -8,6 +8,7 @@
  */
 
 #include "modbus_meter.h"
+#include "modbus_rtu.h"
 #include <string.h>
 
 /*============================================================================
@@ -113,7 +114,8 @@ int meter_read_all(uint8_t slave_id, meter_board_t *out)
     uint16_t regs[METER_REG_READ_COUNT];
     int rc;
 
-    rc = modbus_read_input_regs(slave_id, 0x0000, METER_REG_READ_COUNT, regs);
+    rc = modbus_read_regs(slave_id, MB_FC_READ_INPUT_REGS,
+                          0x0000, METER_REG_READ_COUNT, regs);
     if (rc != MB_OK) {
         dbg_log("[METER] read_all failed: slave=%u rc=%d\r\n", slave_id, rc);
         return rc;
@@ -155,4 +157,102 @@ int meter_set_relay(uint8_t slave_id, uint8_t channel, uint8_t on)
         dbg_log("[METER] set_relay failed: rc=%d\r\n", rc);
     }
     return rc;
+}
+
+/*============================================================================
+ * total_meter_read — Read 3-phase total meter (FC03, slave 1, 34 regs)
+ *============================================================================*/
+
+int total_meter_read(total_meter_data_t *out)
+{
+    uint16_t regs[TOTAL_METER_REG_COUNT];
+    int rc;
+
+    rc = modbus_read_regs(TOTAL_METER_SLAVE_ID, MB_FC_READ_HOLDING_REGS,
+                          TOTAL_METER_START_REG, TOTAL_METER_REG_COUNT, regs);
+    if (rc != MB_OK) {
+        dbg_log("[TMETER] read failed: rc=%d\r\n", rc);
+        return rc;
+    }
+
+    memset(out, 0, sizeof(total_meter_data_t));
+
+    /* Per-phase voltage / current / active power */
+    out->voltage[0] = regs[TM_OFF_VA];
+    out->voltage[1] = regs[TM_OFF_VB];
+    out->voltage[2] = regs[TM_OFF_VC];
+
+    out->current[0] = regs[TM_OFF_IA];
+    out->current[1] = regs[TM_OFF_IB];
+    out->current[2] = regs[TM_OFF_IC];
+
+    out->power[0] = regs[TM_OFF_PA];
+    out->power[1] = regs[TM_OFF_PB];
+    out->power[2] = regs[TM_OFF_PC];
+
+    /* Total active power (U32) */
+    out->total_power = ((uint32_t)regs[TM_OFF_PT_HI] << 16)
+                     | (uint32_t)regs[TM_OFF_PT_LO];
+
+    /* Frequency */
+    out->frequency = regs[TM_OFF_FREQ];
+
+    /* Power factor */
+    out->pf[0]    = regs[TM_OFF_PFA];
+    out->pf[1]    = regs[TM_OFF_PFB];
+    out->pf[2]    = regs[TM_OFF_PFC];
+    out->total_pf = regs[TM_OFF_PFT];
+
+    /* Per-phase active energy (U32) */
+    out->energy[0] = ((uint32_t)regs[TM_OFF_EA_HI] << 16) | (uint32_t)regs[TM_OFF_EA_LO];
+    out->energy[1] = ((uint32_t)regs[TM_OFF_EB_HI] << 16) | (uint32_t)regs[TM_OFF_EB_LO];
+    out->energy[2] = ((uint32_t)regs[TM_OFF_EC_HI] << 16) | (uint32_t)regs[TM_OFF_EC_LO];
+
+    /* Total active energy (U32) */
+    out->total_energy = ((uint32_t)regs[TM_OFF_ET_HI] << 16)
+                      | (uint32_t)regs[TM_OFF_ET_LO];
+
+    dbg_log("[TMETER] freq=%u VA=%u VB=%u VC=%u\r\n",
+            out->frequency, out->voltage[0], out->voltage[1], out->voltage[2]);
+    dbg_log("[TMETER] IA=%u IB=%u IC=%u Pt=%lu\r\n",
+            out->current[0], out->current[1], out->current[2],
+            (unsigned long)out->total_power);
+
+    return MB_OK;
+}
+
+/*============================================================================
+ * total_meter_to_can — Convert total meter to CAN phase_metrics format
+ *
+ * voltage: meter ÷100V  → CAN ×0.1V    (raw / 10)
+ * current: meter ÷100A  → CAN ×0.01A   (raw, same scale)
+ * power:   meter W      → CAN ×1W      (raw, same; U16 clamp for total)
+ * pf:      meter ÷1000  → CAN ×0.01    (raw / 10)
+ * energy:  meter ÷100kWh → CAN ×0.01kWh (raw, same scale)
+ *============================================================================*/
+
+void total_meter_to_can(const total_meter_data_t *tm,
+                        can_metrics_t *out_total,
+                        can_metrics_t out_phases[3])
+{
+    uint8_t i;
+    uint32_t sum_current = 0;
+
+    /* Per-phase: L1=A, L2=B, L3=C */
+    for (i = 0; i < 3; i++) {
+        out_phases[i].voltage = tm->voltage[i] / 10;
+        out_phases[i].current = tm->current[i];          /* same scale */
+        out_phases[i].power   = tm->power[i];             /* same scale */
+        out_phases[i].pf      = (uint8_t)(tm->pf[i] / 10);
+        out_phases[i].energy  = tm->energy[i];            /* same scale */
+
+        sum_current += tm->current[i];
+    }
+
+    /* Total */
+    out_total->voltage = (tm->voltage[0] + tm->voltage[1] + tm->voltage[2]) / 30;
+    out_total->current = (uint16_t)(sum_current > 0xFFFF ? 0xFFFF : sum_current);
+    out_total->power   = (uint16_t)(tm->total_power > 0xFFFF ? 0xFFFF : tm->total_power);
+    out_total->pf      = (uint8_t)(tm->total_pf / 10);
+    out_total->energy  = tm->total_energy;
 }

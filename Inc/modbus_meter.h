@@ -139,6 +139,89 @@ typedef struct {
 } meter_outlet_map_t;
 
 /*============================================================================
+ * Total Power Meter (Slave ID 1, FC03)
+ *
+ * 3-phase input power meter at node level.
+ * Register map (FC03, address 0x0100-0x0121, 34 registers):
+ *
+ *   Offset  Addr    Description              Unit / Scale
+ *   ------  ------  -----------------------  ----------------
+ *   [0]     0x0100  A phase voltage           ÷100 V
+ *   [1]     0x0101  B phase voltage           ÷100 V
+ *   [2]     0x0102  C phase voltage           ÷100 V
+ *   [3]     0x0103  A phase current            ÷100 A
+ *   [4]     0x0104  B phase current            ÷100 A
+ *   [5]     0x0105  C phase current            ÷100 A
+ *   [6]     0x0106  A phase active power       W
+ *   [7]     0x0107  B phase active power       W
+ *   [8]     0x0108  C phase active power       W
+ *   [9-10]  0x0109  Total active power (U32)   W
+ *   [11]    0x010B  A reactive power (skip)
+ *   [12]    0x010C  B reactive power (skip)
+ *   [13]    0x010D  C reactive power (skip)
+ *   [14-15] 0x010E  Total reactive (skip, U32)
+ *   [16]    0x0110  A apparent power (skip)
+ *   [17]    0x0111  B apparent power (skip)
+ *   [18]    0x0112  C apparent power (skip)
+ *   [19-20] 0x0113  Total apparent (skip, U32)
+ *   [21]    0x0115  Frequency                 ÷100 Hz
+ *   [22]    0x0116  A phase PF                ÷1000
+ *   [23]    0x0117  B phase PF                ÷1000
+ *   [24]    0x0118  C phase PF                ÷1000
+ *   [25]    0x0119  Total PF                  ÷1000
+ *   [26-27] 0x011A  A active energy (U32)     ÷100 kWh
+ *   [28-29] 0x011C  B active energy (U32)     ÷100 kWh
+ *   [30-31] 0x011E  C active energy (U32)     ÷100 kWh
+ *   [32-33] 0x0120  Total active energy (U32) ÷100 kWh
+ *============================================================================*/
+
+#define TOTAL_METER_SLAVE_ID    1
+#define TOTAL_METER_START_REG   0x0100
+#define TOTAL_METER_REG_COUNT   34      /* 0x0100 to 0x0121 */
+
+/* Register offsets (index into FC03 response array, base = 0x0100) */
+#define TM_OFF_VA       0       /* A voltage */
+#define TM_OFF_VB       1       /* B voltage */
+#define TM_OFF_VC       2       /* C voltage */
+#define TM_OFF_IA       3       /* A current */
+#define TM_OFF_IB       4       /* B current */
+#define TM_OFF_IC       5       /* C current */
+#define TM_OFF_PA       6       /* A active power */
+#define TM_OFF_PB       7       /* B active power */
+#define TM_OFF_PC       8       /* C active power */
+#define TM_OFF_PT_HI    9       /* Total active power (U32 high) */
+#define TM_OFF_PT_LO    10      /* Total active power (U32 low) */
+#define TM_OFF_FREQ     21      /* Frequency */
+#define TM_OFF_PFA      22      /* A PF */
+#define TM_OFF_PFB      23      /* B PF */
+#define TM_OFF_PFC      24      /* C PF */
+#define TM_OFF_PFT      25      /* Total PF */
+#define TM_OFF_EA_HI    26      /* A active energy (U32 high) */
+#define TM_OFF_EA_LO    27      /* A active energy (U32 low) */
+#define TM_OFF_EB_HI    28      /* B active energy */
+#define TM_OFF_EB_LO    29
+#define TM_OFF_EC_HI    30      /* C active energy */
+#define TM_OFF_EC_LO    31
+#define TM_OFF_ET_HI    32      /* Total active energy */
+#define TM_OFF_ET_LO    33
+
+/*============================================================================
+ * Total Meter Data (after parsing)
+ *============================================================================*/
+
+typedef struct {
+    uint16_t voltage[3];     /* A/B/C, raw ÷100V */
+    uint16_t current[3];     /* A/B/C, raw ÷100A */
+    uint16_t power[3];       /* A/B/C, raw W */
+    uint32_t total_power;    /* raw W (U32) */
+    uint16_t frequency;      /* raw ÷100Hz */
+    uint16_t pf[3];          /* A/B/C, raw ÷1000 */
+    uint16_t total_pf;       /* raw ÷1000 */
+    uint32_t energy[3];      /* A/B/C, raw ÷100kWh */
+    uint32_t total_energy;   /* raw ÷100kWh */
+} total_meter_data_t;
+
+/*============================================================================
  * API
  *============================================================================*/
 
@@ -177,5 +260,30 @@ void meter_outlet_to_board(uint8_t outlet_id, meter_outlet_map_t *out);
  *   energy:  1084 ×0.0001kWh → CAN ×0.01kWh (÷100)
  */
 void meter_channel_to_can(const meter_channel_t *ch, can_metrics_t *out);
+
+/**
+ * @brief Read total power meter (FC03, 34 regs, slave ID 1).
+ * @param out  Parsed total meter data
+ * @return MB_OK on success, negative on failure
+ */
+int total_meter_read(total_meter_data_t *out);
+
+/**
+ * @brief Convert total meter data to CAN phase_metrics format.
+ *
+ * Unit conversions:
+ *   voltage: meter ÷100V  → CAN ×0.1V    (÷10)
+ *   current: meter ÷100A  → CAN ×0.01A   (same scale)
+ *   power:   meter W      → CAN ×1W      (same, U16 clamp)
+ *   pf:      meter ÷1000  → CAN ×0.01    (÷10)
+ *   energy:  meter ÷100kWh → CAN ×0.01kWh (same scale)
+ *
+ * @param tm         Total meter data
+ * @param out_total  CAN metrics for total (phase_metrics[0])
+ * @param out_phases CAN metrics for L1/L2/L3 (phase_metrics[1..3])
+ */
+void total_meter_to_can(const total_meter_data_t *tm,
+                        can_metrics_t *out_total,
+                        can_metrics_t out_phases[3]);
 
 #endif /* __MODBUS_METER_H */

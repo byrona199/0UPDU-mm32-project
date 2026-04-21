@@ -486,11 +486,13 @@ static void process_relay_queue(void)
 /*============================================================================
  * Thread_UART_outlet_stat: Modbus RTU polling loop
  *
- * Polls each metering board (slave ID 2..13) via RS-485 Modbus:
+ * Polls total power meter (slave ID 1, FC03) and each metering board
+ * (slave ID 2..13, FC04) via RS-485 Modbus:
  *   1. Process any pending relay commands from the queue
- *   2. Read all 38 registers (FC04) from each board
- *   3. Convert and store into shared outlet_metrics[]/outlet_state[]
- *   4. Aggregate into phase_metrics[] totals
+ *   2. Poll total power meter for 3-phase metrics
+ *   3. Read all 38 registers (FC04) from each outlet board
+ *   4. Convert and store into shared outlet_metrics[]/outlet_state[]
+ *   5. Update phase_metrics[] from total meter data
  *============================================================================*/
 void Thread_UART_outlet_stat(void const *argument)
 {
@@ -502,12 +504,11 @@ void Thread_UART_outlet_stat(void const *argument)
     can_metrics_t can_ch;
     int rc;
 
-    /* Aggregation accumulators */
-    uint32_t total_current;
-    uint32_t total_power;
-    uint32_t total_energy;
+    /* Total power meter */
+    total_meter_data_t total_data;
+    int total_rc;
 
-    dbg_log("[MODBUS] Thread started, polling %u boards\r\n", METER_BOARD_COUNT);
+    dbg_log("[MODBUS] Thread started, polling %u boards + total meter\r\n", METER_BOARD_COUNT);
 
     /* Wait a bit for metering boards to be ready after power-on */
     osDelay(2000);
@@ -516,12 +517,13 @@ void Thread_UART_outlet_stat(void const *argument)
         /* Process relay commands first (high priority) */
         process_relay_queue();
 
-        /* Reset aggregation */
-        total_current = 0;
-        total_power   = 0;
-        total_energy  = 0;
+        /* ---- Poll total power meter (slave 1, FC03) ---- */
+        total_rc = total_meter_read(&total_data);
+        if (total_rc != MB_OK) {
+            dbg_log("[MODBUS] Total meter offline\r\n");
+        }
 
-        /* Poll each board */
+        /* ---- Poll each outlet board ---- */
         for (board = 0; board < METER_BOARD_COUNT; board++) {
             uint8_t slave_id = board + METER_SLAVE_ID_BASE;
 
@@ -538,11 +540,6 @@ void Thread_UART_outlet_stat(void const *argument)
             /* Update shared data for each channel */
             osMutexWait(data_mutex, osWaitForever);
 
-            /* Store frequency from first successful board */
-            if (board_data.frequency > 0) {
-                frequency_fp = board_data.frequency;
-            }
-
             for (ch = 0; ch < METER_CHANNELS_PER_BOARD; ch++) {
                 outlet_id = board * METER_CHANNELS_PER_BOARD + ch;
                 if (outlet_id >= MAX_OUTLET) break;
@@ -553,24 +550,20 @@ void Thread_UART_outlet_stat(void const *argument)
 
                 /* Update outlet state from relay state bits */
                 outlet_state[outlet_id] = (board_data.relay_state >> ch) & 0x01;
-
-                /* Accumulate totals */
-                total_current += can_ch.current;
-                total_power   += can_ch.power;
-                total_energy  += can_ch.energy;
             }
 
             osMutexRelease(data_mutex);
         }
 
-        /* Update total phase metrics (simplified: all outlets summed as total) */
+        /* ---- Update phase metrics from total meter ---- */
         osMutexWait(data_mutex, osWaitForever);
-        phase_type = 0;  /* TODO: set from configuration */
-        phase_metrics[0].current = (uint16_t)(total_current > 0xFFFF ? 0xFFFF : total_current);
-        phase_metrics[0].voltage = outlet_metrics[0].voltage;  /* Use first outlet's voltage */
-        phase_metrics[0].power   = (uint16_t)(total_power > 0xFFFF ? 0xFFFF : total_power);
-        phase_metrics[0].pf      = 0;   /* TODO: calculate weighted average PF */
-        phase_metrics[0].energy  = (uint32_t)total_energy;
+        if (total_rc == MB_OK) {
+            total_meter_to_can(&total_data,
+                               &phase_metrics[0],   /* total */
+                               &phase_metrics[1]);   /* L1/L2/L3 array */
+            frequency_fp = total_data.frequency;
+            phase_type = 1;  /* three-phase */
+        }
         osMutexRelease(data_mutex);
 
         /* Inter-poll delay: remaining time in 10s cycle.

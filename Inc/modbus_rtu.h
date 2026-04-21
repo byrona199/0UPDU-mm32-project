@@ -28,6 +28,7 @@
  * Modbus Function Codes
  *============================================================================*/
 
+#define MB_FC_READ_HOLDING_REGS 0x03
 #define MB_FC_READ_INPUT_REGS   0x04
 #define MB_FC_WRITE_SINGLE_REG  0x06
 #define MB_FC_WRITE_MULTI_REGS  0x10
@@ -73,16 +74,17 @@ extern volatile uint16_t mb_rx_tail;    /* Consumer reads here */
 void modbus_init(void);
 
 /**
- * @brief Read Input Registers (FC04).
+ * @brief Read Registers (FC03 Holding / FC04 Input).
  * @param slave_id  Slave address (1-247)
+ * @param fc        Function code (MB_FC_READ_HOLDING_REGS or MB_FC_READ_INPUT_REGS)
  * @param start_reg Starting register address
  * @param num_regs  Number of registers to read (1-125)
  * @param out_regs  Output buffer for register values (caller allocates)
  * @return MB_OK on success, negative error code on failure.
  *         On success, out_regs[0..num_regs-1] contain the register values.
  */
-int modbus_read_input_regs(uint8_t slave_id, uint16_t start_reg,
-                           uint16_t num_regs, uint16_t *out_regs);
+int modbus_read_regs(uint8_t slave_id, uint8_t fc, uint16_t start_reg,
+                     uint16_t num_regs, uint16_t *out_regs);
 
 /**
  * @brief Write Single Register (FC06).
