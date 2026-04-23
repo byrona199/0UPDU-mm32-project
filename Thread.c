@@ -301,9 +301,18 @@ static void handle_relay_cmd(const uint8_t *data, uint8_t len)
 {
     can_relay_cmd_t cmd;
     can_relay_ack_t ack;
+    uint8_t copy_len;
 
-    if (len < sizeof(can_relay_cmd_t)) return;
-    memcpy(&cmd, data, sizeof(cmd));
+    /* Thread_CAN_RX already strips the 1-byte transport header.
+     * Here len is pure payload length, so compare directly with payload struct size. */
+    if (len < sizeof(can_relay_cmd_t)) {
+        dbg_log("[RELAY] Short payload len=%u\r\n", len);
+        return;
+    }
+
+    memset(&cmd, 0, sizeof(cmd));
+    copy_len = (len < sizeof(cmd)) ? len : (uint8_t)sizeof(cmd);
+    memcpy(&cmd, data, copy_len);
 
     ack.command   = cmd.command;
     ack.outlet_id = cmd.outlet_id;
@@ -489,10 +498,10 @@ static void process_relay_queue(void)
  * Polls total power meter (slave ID 1, FC03) and each metering board
  * (slave ID 2..13, FC04) via RS-485 Modbus:
  *   1. Process any pending relay commands from the queue
- *   2. Poll total power meter for 3-phase metrics
+ *   2. (Temporarily disabled) Poll total power meter for 3-phase metrics
  *   3. Read all 38 registers (FC04) from each outlet board
  *   4. Convert and store into shared outlet_metrics[]/outlet_state[]
- *   5. Update phase_metrics[] from total meter data
+ *   5. Update phase_metrics[] (total meter path temporarily disabled)
  *============================================================================*/
 void Thread_UART_outlet_stat(void const *argument)
 {
@@ -508,7 +517,7 @@ void Thread_UART_outlet_stat(void const *argument)
     total_meter_data_t total_data;
     int total_rc;
 
-    dbg_log("[MODBUS] Thread started, polling %u boards + total meter\r\n", METER_BOARD_COUNT);
+    dbg_log("[MODBUS] Thread started, polling %u boards (total meter disabled)\r\n", METER_BOARD_COUNT);
 
     /* Wait a bit for metering boards to be ready after power-on */
     osDelay(2000);
@@ -517,11 +526,13 @@ void Thread_UART_outlet_stat(void const *argument)
         /* Process relay commands first (high priority) */
         process_relay_queue();
 
-        /* ---- Poll total power meter (slave 1, FC03) ---- */
-        total_rc = total_meter_read(&total_data);
-        if (total_rc != MB_OK) {
-            dbg_log("[MODBUS] Total meter offline\r\n");
-        }
+        /* ---- Poll total power meter (slave 1, FC03) ----
+         * Disabled temporarily for relay/control testing. */
+        // total_rc = total_meter_read(&total_data);
+        // if (total_rc != MB_OK) {
+        //     dbg_log("[MODBUS] Total meter offline\r\n");
+        // }
+        total_rc = MB_ERR_TIMEOUT;
 
         /* ---- Poll each outlet board ---- */
         for (board = 0; board < METER_BOARD_COUNT; board++) {
@@ -563,6 +574,11 @@ void Thread_UART_outlet_stat(void const *argument)
                                &phase_metrics[1]);   /* L1/L2/L3 array */
             frequency_fp = total_data.frequency;
             phase_type = 1;  /* three-phase */
+        } else {
+            /* No total meter data: publish empty power snapshot and avoid stale values. */
+            memset(phase_metrics, 0, sizeof(phase_metrics));
+            frequency_fp = 0;
+            phase_type = 0;
         }
         osMutexRelease(data_mutex);
 

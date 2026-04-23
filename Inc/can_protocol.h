@@ -238,14 +238,14 @@ typedef struct {
 /* MM32 收到後立即重新發送 CONNECT_REQ */
 
 /*============================================================================
- * RELAY_CMD Payload (MSG_TYPE 0x00) — Single frame, 8 bytes
+ * RELAY_CMD Payload (MSG_TYPE 0x00) — Single frame, 7-byte payload
  *============================================================================*/
 
 typedef struct {
     uint8_t  command;           /* see CAN_RELAY_CMD_* */
     uint8_t  outlet_id;         /* 0x00-0x2F for single outlet */
     uint16_t delay;             /* unit: 100ms, max 6553.5 sec */
-    uint8_t  reserved[4];
+    uint8_t  reserved[3];
 } __attribute__((packed)) can_relay_cmd_t;
 
 #define CAN_RELAY_CMD_OFF       0x00
@@ -255,14 +255,14 @@ typedef struct {
 #define CAN_RELAY_CMD_ALL_ON    0x04
 
 /*============================================================================
- * RELAY_ACK Payload (MSG_TYPE 0x01) — Single frame, 8 bytes
+ * RELAY_ACK Payload (MSG_TYPE 0x01) — Single frame, 7-byte payload
  *============================================================================*/
 
 typedef struct {
     uint8_t  command;           /* echoed command */
     uint8_t  outlet_id;         /* echoed outlet */
     uint8_t  result;            /* 0=success, 1=fail */
-    uint8_t  reserved[5];
+    uint8_t  reserved[4];
 } __attribute__((packed)) can_relay_ack_t;
 
 #define CAN_RELAY_ACK_OK        0
@@ -280,23 +280,23 @@ typedef struct {
 #define CAN_POLL_ALL            0x00
 
 /*============================================================================
- * CONFIG_WRITE Payload (MSG_TYPE 0x07) — Single frame, 8 bytes
+ * CONFIG_WRITE Payload (MSG_TYPE 0x07) — Single frame, 7-byte payload
  *============================================================================*/
 
 typedef struct {
     uint8_t  config_id;         /* which config parameter */
     uint8_t  reserved_hdr;
-    uint8_t  data[6];           /* config-specific data */
+    uint8_t  data[5];           /* config-specific data */
 } __attribute__((packed)) can_config_write_t;
 
 /*============================================================================
- * CONFIG_ACK Payload (MSG_TYPE 0x08) — Single frame, 8 bytes
+ * CONFIG_ACK Payload (MSG_TYPE 0x08) — Single frame, 7-byte payload
  *============================================================================*/
 
 typedef struct {
     uint8_t  config_id;         /* echoed config_id */
     uint8_t  result;            /* 0=success, 1=fail */
-    uint8_t  reserved[6];
+    uint8_t  reserved[5];
 } __attribute__((packed)) can_config_ack_t;
 
 /*============================================================================
