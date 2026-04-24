@@ -28,9 +28,18 @@ extern osMutexId uart_mutex;
  *============================================================================*/
 void dbg_log(const char *fmt, ...)
 {
-    char dbg_buf[256];
+    /* Static buffer is safe here because uart_mutex below serializes
+     * both the formatting and the UART2 transmit. Keeping it static
+     * avoids a 256-byte stack hit on every caller thread. */
+    static char dbg_buf[256];
     va_list ap;
     int len;
+
+    /* Prevent multi-threaded logs from mixing on UART2,
+     * and protect the shared dbg_buf above. */
+    if (uart_mutex) {
+        osMutexWait(uart_mutex, osWaitForever);
+    }
 
     va_start(ap, fmt);
     len = vsnprintf(dbg_buf, sizeof(dbg_buf), fmt, ap);
@@ -38,15 +47,11 @@ void dbg_log(const char *fmt, ...)
 
     if (len > 0) {
         if (len >= (int)sizeof(dbg_buf)) len = sizeof(dbg_buf) - 1;
-
-        /* Prevent multi-threaded logs from mixing on UART2. */
-        if (uart_mutex) {
-            osMutexWait(uart_mutex, osWaitForever);
-        }
         UART2_Send_Group((u8 *)dbg_buf, (u16)len);
-        if (uart_mutex) {
-            osMutexRelease(uart_mutex);
-        }
+    }
+
+    if (uart_mutex) {
+        osMutexRelease(uart_mutex);
     }
 }
 
