@@ -125,6 +125,12 @@ int meter_read_all(uint8_t slave_id, meter_board_t *out)
 
     dbg_log("[METER] slave=%u freq=%u relay=0x%04X fault=0x%04X\r\n",
             slave_id, out->frequency, out->relay_state, out->fault_state);
+    dbg_log("[METER]   relays: ch1=%s ch2=%s ch3=%s ch4=%s (target=0x%04X)\r\n",
+            (out->relay_state & 0x0001) ? "ON" : "OFF",
+            (out->relay_state & 0x0002) ? "ON" : "OFF",
+            (out->relay_state & 0x0004) ? "ON" : "OFF",
+            (out->relay_state & 0x0008) ? "ON" : "OFF",
+            out->target_state);
     dbg_log("[METER]   ch1: V=%u I=%u P=%u PF=%u E=%lu\r\n",
             out->channels[0].voltage, out->channels[0].current,
             out->channels[0].power, out->channels[0].pf,

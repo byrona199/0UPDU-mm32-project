@@ -21,21 +21,32 @@
 #include <stdio.h>
 #include <stdarg.h>
 
+extern osMutexId uart_mutex;
+
 /*============================================================================
  * UART2 Debug Log (temporary)
  *============================================================================*/
-static char dbg_buf[256];
-
 void dbg_log(const char *fmt, ...)
 {
+    char dbg_buf[256];
     va_list ap;
     int len;
+
     va_start(ap, fmt);
     len = vsnprintf(dbg_buf, sizeof(dbg_buf), fmt, ap);
     va_end(ap);
+
     if (len > 0) {
         if (len >= (int)sizeof(dbg_buf)) len = sizeof(dbg_buf) - 1;
+
+        /* Prevent multi-threaded logs from mixing on UART2. */
+        if (uart_mutex) {
+            osMutexWait(uart_mutex, osWaitForever);
+        }
         UART2_Send_Group((u8 *)dbg_buf, (u16)len);
+        if (uart_mutex) {
+            osMutexRelease(uart_mutex);
+        }
     }
 }
 
