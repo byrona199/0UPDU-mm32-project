@@ -238,73 +238,47 @@ int Init_Thread(void)
 }
 
 /*============================================================================
- * Build and send POWER_METRICS response (multi-frame, 47 bytes)
- *============================================================================*/
-static void send_power_metrics(void)
-{
-    can_power_payload_t pwr;
-
-    osMutexWait(data_mutex, osWaitForever);
-    pwr.frequency  = frequency_fp;
-    pwr.phase_type = phase_type;
-    pwr.total      = phase_metrics[0];
-    pwr.phases[0]  = phase_metrics[1];
-    pwr.phases[1]  = phase_metrics[2];
-    pwr.phases[2]  = phase_metrics[3];
-    osMutexRelease(data_mutex);
-
-    osMutexWait(can_mutex, osWaitForever);
-    CAN_SendMultiFrame(CAN_MSG_POWER_METRICS, (const uint8_t *)&pwr, sizeof(pwr));
-    osMutexRelease(can_mutex);
-}
-
-/*============================================================================
- * Build and send OUTLET_STATE response (multi-frame, 18 bytes)
+ * Build full burst snapshot (called before sending, under data_mutex)
  *
- * Bit packing: 3 bits per outlet (state[0] + phase[2:1])
+ * Snapshots all shared data into local buffers so the can_mutex hold
+ * during the burst does not block Thread_Metering / Thread_UART_outlet_stat.
  *============================================================================*/
-static void send_outlet_state(void)
+static can_power_payload_t  can_power_payload_burst;
+static uint8_t              outlet_state_burst[CAN_OUTLET_STATE_DATA_SIZE];
+static uint8_t              outlet_metrics_burst[CAN_OUTLET_METRICS_DATA_SIZE];
+
+static void prepare_burst_snapshot(void)
 {
-    uint8_t buf[CAN_OUTLET_STATE_DATA_SIZE];
     uint16_t bit_offset = 0;
     uint8_t i;
 
-    memset(buf, 0, sizeof(buf));
-
     osMutexWait(data_mutex, osWaitForever);
+
+    /* Power payload */
+    can_power_payload_burst.frequency  = frequency_fp;
+    can_power_payload_burst.phase_type = phase_type;
+    can_power_payload_burst.total      = phase_metrics[0];
+    can_power_payload_burst.phases[0]  = phase_metrics[1];
+    can_power_payload_burst.phases[1]  = phase_metrics[2];
+    can_power_payload_burst.phases[2]  = phase_metrics[3];
+
+    /* Outlet state: 3 bits per outlet, LSB-first */
+    memset(outlet_state_burst, 0, sizeof(outlet_state_burst));
     for (i = 0; i < MAX_OUTLET; i++) {
-        uint8_t packed = CAN_OUTLET_PACK(outlet_state[i], outlet_phase[i]);
+        uint8_t packed    = CAN_OUTLET_PACK(outlet_state[i], outlet_phase[i]);
         uint16_t byte_idx = bit_offset / 8;
         uint8_t  bit_pos  = bit_offset % 8;
-
-        /* Pack 3 bits, may span 2 bytes */
-        buf[byte_idx] |= (packed << bit_pos) & 0xFF;
+        outlet_state_burst[byte_idx] |= (packed << bit_pos) & 0xFF;
         if (bit_pos > 5) {
-            buf[byte_idx + 1] |= packed >> (8 - bit_pos);
+            outlet_state_burst[byte_idx + 1] |= packed >> (8 - bit_pos);
         }
         bit_offset += 3;
     }
+
+    /* Outlet metrics */
+    memcpy(outlet_metrics_burst, outlet_metrics, sizeof(outlet_metrics_burst));
+
     osMutexRelease(data_mutex);
-
-    osMutexWait(can_mutex, osWaitForever);
-    CAN_SendMultiFrame(CAN_MSG_OUTLET_STATE, buf, sizeof(buf));
-    osMutexRelease(can_mutex);
-}
-
-/*============================================================================
- * Build and send OUTLET_METRICS response (multi-frame, 528 bytes)
- *============================================================================*/
-static void send_outlet_metrics(void)
-{
-    uint8_t buf[CAN_OUTLET_METRICS_DATA_SIZE];
-
-    osMutexWait(data_mutex, osWaitForever);
-    memcpy(buf, outlet_metrics, sizeof(buf));
-    osMutexRelease(data_mutex);
-
-    osMutexWait(can_mutex, osWaitForever);
-    CAN_SendMultiFrame(CAN_MSG_OUTLET_METRICS, buf, sizeof(buf));
-    osMutexRelease(can_mutex);
 }
 
 /*============================================================================
@@ -400,13 +374,24 @@ void Thread_CAN_RX(void const *argument)
                     break;
 
                 case CAN_MSG_POLL_REQ:
+                    /* Snapshot data first (takes data_mutex, does not hold can_mutex). */
+                    prepare_burst_snapshot();
+                    /* Hold can_mutex across the full burst so no other thread
+                     * (e.g. Thread_CAN_Connect) can insert a frame between
+                     * POWER_METRICS, OUTLET_STATE, and OUTLET_METRICS. */
                     dbg_log("[CAN_RX] POLL_REQ -> sending burst\r\n");
-                    send_power_metrics();
-                    dbg_log("[CAN_RX]   power_metrics sent\r\n");
-                    send_outlet_state();
-                    dbg_log("[CAN_RX]   outlet_state sent\r\n");
-                    send_outlet_metrics();
-                    dbg_log("[CAN_RX]   outlet_metrics sent\r\n");
+                    osMutexWait(can_mutex, osWaitForever);
+                    CAN_SendMultiFrame(CAN_MSG_POWER_METRICS,
+                                      (const uint8_t *)&can_power_payload_burst,
+                                      sizeof(can_power_payload_burst));
+                    CAN_SendMultiFrame(CAN_MSG_OUTLET_STATE,
+                                      outlet_state_burst,
+                                      sizeof(outlet_state_burst));
+                    CAN_SendMultiFrame(CAN_MSG_OUTLET_METRICS,
+                                      outlet_metrics_burst,
+                                      sizeof(outlet_metrics_burst));
+                    osMutexRelease(can_mutex);
+                    dbg_log("[CAN_RX] burst sent (power+state+metrics)\r\n");
                     break;
 
                 case CAN_MSG_RELAY_CMD:
@@ -621,6 +606,11 @@ void Thread_CAN_Connect(void const *argument)
 
     dbg_log("[CONNECT] Thread started, sending initial CONNECT_REQ\r\n");
 
+    /* Stagger initial CONNECT_REQ by NODE_ID to prevent simultaneous
+     * transmissions when multiple nodes power on at the same time.
+     * Node N waits N * 500ms before its first send (max 10s for node 20). */
+    osDelay((uint32_t)MY_NODE_ID * 500u);
+
     /* 啟動後立即發送 */
     send_connect_req();
     waiting_ack = 1;
@@ -650,10 +640,13 @@ void Thread_CAN_Connect(void const *argument)
                 interval_ms = (uint32_t)CAN_HEARTBEAT_INTERVAL_S * 1000u;
             }
 
-            /* WHO_IS_ONLINE 收到：不論狀態立即發送 */
+            /* WHO_IS_ONLINE 收到：不論狀態立即發送，但仍加 NODE_ID jitter
+             * 避免多節點同時搶 CAN bus。 */
             if (g_who_is_online_flag) {
                 g_who_is_online_flag = 0;
-                dbg_log("[CONNECT] WHO_IS_ONLINE: sending CONNECT_REQ immediately\r\n");
+                dbg_log("[CONNECT] WHO_IS_ONLINE: sending CONNECT_REQ (jitter %ums)\r\n",
+                        (unsigned)(MY_NODE_ID * 50u));
+                osDelay((uint32_t)MY_NODE_ID * 50u);  /* 50ms per node ID */
                 break;
             }
         }
