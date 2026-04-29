@@ -499,10 +499,10 @@ static void process_relay_queue(void)
  * Polls total power meter (slave ID 1, FC03) and each metering board
  * (slave ID 2..13, FC04) via RS-485 Modbus:
  *   1. Process any pending relay commands from the queue
- *   2. (Temporarily disabled) Poll total power meter for 3-phase metrics
+ *   2. Poll total power meter for 3-phase metrics
  *   3. Read all 38 registers (FC04) from each outlet board
  *   4. Convert and store into shared outlet_metrics[]/outlet_state[]
- *   5. Update phase_metrics[] (total meter path temporarily disabled)
+ *   5. Update phase_metrics[] from total meter data
  *============================================================================*/
 void Thread_UART_outlet_stat(void const *argument)
 {
@@ -518,7 +518,7 @@ void Thread_UART_outlet_stat(void const *argument)
     total_meter_data_t total_data;
     int total_rc;
 
-    dbg_log("[MODBUS] Thread started, polling %u boards (total meter disabled)\r\n", METER_BOARD_COUNT);
+    dbg_log("[MODBUS] Thread started, polling %u boards + total meter\r\n", METER_BOARD_COUNT);
 
     /* Wait a bit for metering boards to be ready after power-on */
     osDelay(2000);
@@ -527,13 +527,11 @@ void Thread_UART_outlet_stat(void const *argument)
         /* Process relay commands first (high priority) */
         process_relay_queue();
 
-        /* ---- Poll total power meter (slave 1, FC03) ----
-         * Disabled temporarily for relay/control testing. */
-        // total_rc = total_meter_read(&total_data);
-        // if (total_rc != MB_OK) {
-        //     dbg_log("[MODBUS] Total meter offline\r\n");
-        // }
-        total_rc = MB_ERR_TIMEOUT;
+        /* ---- Poll total power meter (slave 1, FC03) ---- */
+        total_rc = total_meter_read(&total_data);
+        if (total_rc != MB_OK) {
+            dbg_log("[MODBUS] Total meter offline\r\n");
+        }
 
         /* ---- Poll each outlet board ---- */
         for (board = 0; board < METER_BOARD_COUNT; board++) {
