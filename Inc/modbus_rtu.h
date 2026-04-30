@@ -19,9 +19,11 @@
  *============================================================================*/
 
 #define MB_BAUDRATE             9600
-#define MB_RESPONSE_TIMEOUT_MS  200     /* Max wait for slave response */
+#define MB_RESPONSE_TIMEOUT_MS  500     /* Max wait for slave response (total meter is slow) */
 #define MB_MAX_RETRIES          2       /* Retries on timeout/CRC error */
 #define MB_INTER_FRAME_MS       5       /* 3.5 char silence at 9600 ~ 4ms, use 5ms */
+#define MB_BUS_QUIET_MS         15      /* Bus idle window required before retry / next request */
+#define MB_BUS_QUIET_MAX_MS     250     /* Cap total drain wait so we never hang forever */
 #define MB_RX_BUF_SIZE          256     /* Ring buffer for UART1 RX ISR */
 
 /*============================================================================

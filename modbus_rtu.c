@@ -164,6 +164,40 @@ static uint16_t mb_wait_response(uint16_t min_bytes, uint32_t timeout_ms)
 }
 
 /*============================================================================
+ * Internal: Drain the bus until it is quiet
+ *
+ * After a timeout / CRC error the slave may still be transmitting the tail of
+ * its (now-orphaned) response. If we issue the next request immediately we
+ * collide with that trailing burst, so the next "RX" is in fact leftover from
+ * the previous frame (e.g. "Bad slave: expected 1 got 0"). Wait until no new
+ * bytes have arrived for `MB_BUS_QUIET_MS`, then flush.
+ *============================================================================*/
+
+static void mb_drain_bus(void)
+{
+    uint32_t elapsed = 0;
+    uint32_t quiet = 0;
+    uint16_t last = mb_rx_available();
+    uint16_t now;
+
+    while (elapsed < MB_BUS_QUIET_MAX_MS) {
+        osDelay(1);
+        elapsed++;
+        now = mb_rx_available();
+        if (now == last) {
+            quiet++;
+            if (quiet >= MB_BUS_QUIET_MS) {
+                break;
+            }
+        } else {
+            quiet = 0;
+            last = now;
+        }
+    }
+    mb_rx_flush();
+}
+
+/*============================================================================
  * Internal: Debug hex dump
  *============================================================================*/
 
@@ -295,7 +329,14 @@ int modbus_read_regs(uint8_t slave_id, uint8_t fc, uint16_t start_reg,
     expected_bytes = 3 + num_regs * 2 + 2;  /* header + data + CRC */
 
     for (retry = 0; retry <= MB_MAX_RETRIES; retry++) {
-        mb_rx_flush();
+        /* On retries the slave may still be transmitting the tail of the
+         * previous (orphaned) response. Wait for the bus to be quiet, then
+         * flush, so we never mistake leftover bytes for the new reply. */
+        if (retry == 0) {
+            mb_rx_flush();
+        } else {
+            mb_drain_bus();
+        }
 
         /* Log TX */
         mb_log_hex("TX", req, 8);
@@ -405,7 +446,11 @@ int modbus_write_single_reg(uint8_t slave_id, uint16_t reg_addr, uint16_t value)
     req[7] = (uint8_t)(crc >> 8);
 
     for (retry = 0; retry <= MB_MAX_RETRIES; retry++) {
-        mb_rx_flush();
+        if (retry == 0) {
+            mb_rx_flush();
+        } else {
+            mb_drain_bus();
+        }
 
         mb_log_hex("TX", req, 8);
         mb_send_frame(req, 8);
