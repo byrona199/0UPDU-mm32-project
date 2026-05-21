@@ -8,6 +8,9 @@
 #include "can.h"
 #include "iwdg.h"
 #include "modbus_rtu.h"
+#include "ht1621.h"
+#include "buttons.h"
+#include "pdu_role.h"
 #include  <stdio.h>
 
 extern int Init_Thread (void);
@@ -19,6 +22,13 @@ void Peripheral_gpio_init(void);
 int main (void) {
     // initialize peripherals here
     Peripheral_gpio_init();
+
+    // HT1621 LCD: power on Vdd, init, run visual self-test (~10 s busy-wait)
+    ht1621_init();
+    ht1621_selftest();
+
+    // Buttons: PB7 (UP), PB8 (DOWN) input with pull-up
+    buttons_init();
 
     // initialize CMSIS-RTOS
     osKernelInitialize();
@@ -55,8 +65,8 @@ void Peripheral_gpio_init()
 {
     // Meter A  PA1
     // Meter B  PA0
-    // Meter C  PB4
-    // Meter D  PB5
+    // Meter C  PB4  -- reassigned: HT1621 DATA
+    // Meter D  PB5  -- reassigned: HT1621 WR
 
     // Relay 1  PB1
     // Relay 2  PB0
@@ -69,7 +79,11 @@ void Peripheral_gpio_init()
     // Relay 9  PA11
     // Relay 10 PA12
     // Relay 11 PA15
-    // Relay 12 PB3
+    // Relay 12 PB3  -- reassigned: HT1621 Vdd (hardware reworked)
+    //
+    // NOTE: PB3 (HT1621 Vdd), PB4 (HT1621 DATA), PB5 (HT1621 WR),
+    //       PB6 (HT1621 CS), PB7 (BTN_UP), PB8 (BTN_DOWN) are
+    //       configured by ht1621_init() / buttons_init() — NOT here.
 
     GPIO_InitTypeDef GPIO_InitStructure;
 
@@ -82,8 +96,10 @@ void Peripheral_gpio_init()
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
     GPIO_Init(GPIOA, &GPIO_InitStructure);
-    
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1 | GPIO_Pin_2 | GPIO_Pin_3 | GPIO_Pin_4 | GPIO_Pin_5;
+
+    /* PB0, PB1, PB2 = Relay 2, 1, 7 only.
+     * PB3-PB8 are handled by ht1621_init() and buttons_init(). */
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1 | GPIO_Pin_2;
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
     GPIO_Init(GPIOB, &GPIO_InitStructure);

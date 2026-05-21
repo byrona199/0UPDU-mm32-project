@@ -44,40 +44,9 @@
 ////////////////////////////////////////////////////////////////////////////////
 void LED_Init(void)
 {
-/*
-    // PA8
-    //RCC->AHBENR |= RCC_AHBENR_GPIOA | RCC_AHBENR_GPIOB;                         //enable GPIOA,B clock
-    RCC->AHBENR |= RCC_AHBENR_GPIOA;                         //enable GPIOA clock
-
-    GPIOA->CRH &= ~(GPIO_CNF_MODE_MASK << GPIO_CRH_CNF_MODE_8_Pos);
-    GPIOA->CRH |= GPIO_CNF_MODE_OUT_PP << GPIO_CRH_CNF_MODE_8_Pos;
-    GPIOA->ODR |= GPIO_ODR_ODR8;                                               //PA8  output high
-*/
-
-    // PB8 LED1
-    GPIO_InitTypeDef GPIO_InitStructure;
-    RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOB, ENABLE);
-    GPIO_StructInit(&GPIO_InitStructure);
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_8;
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
-    GPIO_Init(GPIOB, &GPIO_InitStructure);
-
-    
-    /*//set PB3,PB4,PB5 as push-pull output
-    GPIOB->CRL &= ~((GPIO_CNF_MODE_MASK << GPIO_CRL_CNF_MODE_3_Pos) | \
-                    (GPIO_CNF_MODE_MASK << GPIO_CRL_CNF_MODE_4_Pos) | \
-                    (GPIO_CNF_MODE_MASK << GPIO_CRL_CNF_MODE_5_Pos) );
-    GPIOB->CRL |=  ((GPIO_CNF_MODE_OUT_PP << GPIO_CRL_CNF_MODE_3_Pos) | \
-                    (GPIO_CNF_MODE_OUT_PP << GPIO_CRL_CNF_MODE_4_Pos) | \
-                    (GPIO_CNF_MODE_OUT_PP << GPIO_CRL_CNF_MODE_5_Pos) );
-
-    GPIOB->ODR |= GPIO_ODR_ODR3 | GPIO_ODR_ODR4 | GPIO_ODR_ODR5;                //PB3,PB4,PB5 output high*/
-
-    LEDGREEN_OFF();
-    //LED2_OFF();
-    //LED3_OFF();
-    //LED4_OFF();
+    /* PB8 (LED1) is now used as BTN_DOWN — hardware reworked.
+     * GPIO configuration is handled by buttons_init().
+     * LED_Init() is intentionally a no-op to preserve the call-site interface. */
 }
 
 /// @}
