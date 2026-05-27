@@ -28,7 +28,7 @@
 /*============================================================================
  * State (all module-private)
  *============================================================================*/
-static const uint16_t s_pin[BTN_COUNT]  = { GPIO_Pin_7, GPIO_Pin_8 };
+static const uint16_t s_pin[BTN_COUNT]  = { GPIO_Pin_9, GPIO_Pin_8 };
 
 static uint8_t s_cnt_pressed[BTN_COUNT];   /* consecutive pressed samples   */
 static uint8_t s_cnt_released[BTN_COUNT];  /* consecutive released samples  */
@@ -45,7 +45,7 @@ void buttons_init(void)
     RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOB, ENABLE);
 
     GPIO_StructInit(&GPIO_InitStructure);
-    GPIO_InitStructure.GPIO_Pin   = GPIO_Pin_7 | GPIO_Pin_8;
+    GPIO_InitStructure.GPIO_Pin   = GPIO_Pin_9 | GPIO_Pin_8;
     GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_IPU;  /* internal pull-up */
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;
     GPIO_Init(GPIOB, &GPIO_InitStructure);

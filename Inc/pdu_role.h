@@ -8,7 +8,7 @@
 ///     node_id   = (role - 1) % 20 + 1       (1..20)
 ///   Role value 0 means "not configured" — CAN must NOT be started.
 ///
-///   Flash page used: 0x08003C00 (last 1 KB of 16 KB Flash)
+///   Flash page used: 0x0800FC00 (last 1 KB of 64 KB Flash)
 ///   Layout: magic(4B) + role(4B) + crc(4B)
 ///   CRC:    magic XOR role
 ////////////////////////////////////////////////////////////////////////////////

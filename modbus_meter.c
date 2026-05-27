@@ -14,7 +14,7 @@
 /*============================================================================
  * Debug log (defined in Thread.c)
  *============================================================================*/
-extern void dbg_log(const char *fmt, ...);
+#include "dbg_log.h"
 
 /*============================================================================
  * Register offset table for each channel's first register (voltage)

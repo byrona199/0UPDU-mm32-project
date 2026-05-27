@@ -18,14 +18,20 @@
 #include "uart_txrx_interrupt.h"
 #include "can.h"
 #include "modbus_meter.h"
+#include "ht1621.h"
+#include "buttons.h"
+#include "pdu_role.h"
+#include "dbg_log.h"
 #include <stdio.h>
 #include <stdarg.h>
 
-extern osMutexId uart_mutex;
-
 /*============================================================================
- * UART2 Debug Log (temporary)
+ * UART2 Debug Log (compile-time switch via dbg_log.h)
  *============================================================================*/
+#if ENABLE_DBG_LOG
+osMutexId uart_mutex;
+osMutexDef(uart_mutex);
+
 void dbg_log(const char *fmt, ...)
 {
     /* Static buffer is safe here because uart_mutex below serializes
@@ -54,6 +60,7 @@ void dbg_log(const char *fmt, ...)
         osMutexRelease(uart_mutex);
     }
 }
+#endif /* ENABLE_DBG_LOG */
 
 /*============================================================================
  * Configuration
@@ -68,24 +75,25 @@ void Thread_CAN_RX(void const *argument);
 void Thread_CAN_Connect(void const *argument);
 void Thread_Metering(void const *argument);
 void Thread_UART_outlet_stat(void const *argument);
+void Thread_Display(void const *argument);
 
 osThreadId tid_CAN_RX;
 osThreadId tid_CAN_Connect;
 osThreadId tid_Metering;
 osThreadId tid_UART_outlet_stat;
+osThreadId tid_Display;
 
-osThreadDef(Thread_CAN_RX,          osPriorityAboveNormal, 1, 1536);
-osThreadDef(Thread_CAN_Connect,     osPriorityNormal,      1, 512);
-osThreadDef(Thread_Metering,        osPriorityNormal,      1, 1024);
-osThreadDef(Thread_UART_outlet_stat, osPriorityNormal,     1, 2048);
+osThreadDef(Thread_CAN_RX,          osPriorityAboveNormal, 1, 1280);
+osThreadDef(Thread_CAN_Connect,     osPriorityNormal,      1, 256);
+osThreadDef(Thread_Metering,        osPriorityNormal,      1, 768);
+osThreadDef(Thread_UART_outlet_stat, osPriorityNormal,     1, 1792);
+osThreadDef(Thread_Display,          osPriorityLow,        1, 512);
 
 /*============================================================================
  * Synchronization
  *============================================================================*/
 osSemaphoreId uart_sem;
 osSemaphoreDef(uart_sem);
-osMutexId uart_mutex;
-osMutexDef(uart_mutex);
 osMutexId can_mutex;
 osMutexDef(can_mutex);
 osMutexId data_mutex;
@@ -128,9 +136,6 @@ static uint8_t outlet_state[MAX_OUTLET];
 
 /** @brief Outlet phase mapping: 0=L1, 1=L2, 2=L3 */
 static uint8_t outlet_phase[MAX_OUTLET];
-
-/** @brief Relay hardware state (actual GPIO) */
-static uint8_t relay_hw_state[MAX_OUTLET];
 
 /*============================================================================
  * Relay Command Queue
@@ -212,7 +217,9 @@ int Init_Thread(void)
     uint8_t i;
 
     uart_sem  = osSemaphoreCreate(osSemaphore(uart_sem), 1);
+#if ENABLE_DBG_LOG
     uart_mutex = osMutexCreate(osMutex(uart_mutex));
+#endif
     can_mutex  = osMutexCreate(osMutex(can_mutex));
     data_mutex = osMutexCreate(osMutex(data_mutex));
     relay_q_mutex = osMutexCreate(osMutex(relay_q_mutex));
@@ -222,17 +229,25 @@ int Init_Thread(void)
         outlet_phase[i] = 0;  /* L1 */
     }
 
-    tid_UART_outlet_stat = osThreadCreate(osThread(Thread_UART_outlet_stat), NULL);
-    if (!tid_UART_outlet_stat) return -1;
+    /* CAN / modbus / metering threads: only when a valid role is configured.
+     * role=0 (unconfigured) runs Thread_Display only; user must commission
+     * via the button UI before CAN is active. */
+    if (g_my_node_id != 0u) {
+        tid_UART_outlet_stat = osThreadCreate(osThread(Thread_UART_outlet_stat), NULL);
+        if (!tid_UART_outlet_stat) return -1;
 
-    tid_Metering = osThreadCreate(osThread(Thread_Metering), NULL);
-    if (!tid_Metering) return -1;
+        tid_Metering = osThreadCreate(osThread(Thread_Metering), NULL);
+        if (!tid_Metering) return -1;
 
-    tid_CAN_RX = osThreadCreate(osThread(Thread_CAN_RX), NULL);
-    if (!tid_CAN_RX) return -1;
+        tid_CAN_RX = osThreadCreate(osThread(Thread_CAN_RX), NULL);
+        if (!tid_CAN_RX) return -1;
 
-    tid_CAN_Connect = osThreadCreate(osThread(Thread_CAN_Connect), NULL);
-    if (!tid_CAN_Connect) return -1;
+        tid_CAN_Connect = osThreadCreate(osThread(Thread_CAN_Connect), NULL);
+        if (!tid_CAN_Connect) return -1;
+    }
+
+    tid_Display = osThreadCreate(osThread(Thread_Display), NULL);
+    if (!tid_Display) return -1;
 
     return 0;
 }
@@ -664,5 +679,291 @@ void Thread_CAN_Connect(void const *argument)
 
         send_connect_req();
         waiting_ack = 1;
+    }
+}
+
+/*============================================================================
+ * Display helpers — role string and current formatting
+ *============================================================================*/
+
+/**
+ * @brief  Format role number into a 4-char display string.
+ *
+ *   role 0     : "----"  (unconfigured)
+ *   role 1..19 : "C1XY"  bus 1, node 01..19
+ *   role 20    : "End1"  + HT1621_DP3  → shows "End.1"
+ *   role 21..39: "C2XY"  bus 2, node 01..19
+ *   role 40    : "End2"  + HT1621_DP3  → shows "End.2"
+ *
+ * @param  role     1..40 or 0 (unconfigured).
+ * @param  buf4     4-element char buffer (NOT null-terminated).
+ * @param  dp_mask  Output dot_mask for ht1621_show_text().
+ */
+static void format_role_str(uint8_t role, char *buf4, uint8_t *dp_mask)
+{
+    uint8_t bus_id, node_id;
+
+    *dp_mask = HT1621_DP_NONE;
+    if (role == 0u) {
+        buf4[0] = '-'; buf4[1] = '-'; buf4[2] = '-'; buf4[3] = '-';
+        return;
+    }
+    bus_id  = (uint8_t)((role - 1u) / 20u + 1u);
+    node_id = (uint8_t)((role - 1u) % 20u + 1u);
+    if (node_id == 20u) {
+        /* "End.1" or "End.2": text "End<bus>", dp3 places the dot after 'd' */
+        buf4[0] = 'E'; buf4[1] = 'n'; buf4[2] = 'd';
+        buf4[3] = (char)('0' + bus_id);
+        *dp_mask = HT1621_DP3;
+    } else {
+        /* "C1XY" or "C2XY" */
+        buf4[0] = 'C';
+        buf4[1] = (char)('0' + bus_id);
+        buf4[2] = (char)('0' + node_id / 10u);
+        buf4[3] = (char)('0' + node_id % 10u);
+    }
+}
+
+/**
+ * @brief  Format raw current (x0.01 A) as a 4-char display string.
+ *
+ *   raw <  1000  →  X.XXX  (dp1)  e.g. raw=234  → "2340" + DP1 → "2.340 A"
+ *   raw < 10000  →  XX.XX  (dp2)  e.g. raw=1234 → "1234" + DP2 → "12.34 A"
+ *   raw >= 10000 →  XXX.X  (dp3)  e.g. raw=10050→ "1005" + DP3 → "100.5 A"
+ *
+ * @param  raw      Current in x0.01 A units (phase_metrics[n].current).
+ * @param  buf4     4-element char buffer (NOT null-terminated).
+ * @param  dp_mask  Output dot_mask for ht1621_show_text().
+ */
+static void format_current(uint16_t raw, char *buf4, uint8_t *dp_mask)
+{
+    uint32_t val;
+
+    if (raw < 1000u) {
+        /* Scale to x0.001 A for X.XXX display */
+        val      = (uint32_t)raw * 10u;
+        buf4[0]  = (char)('0' + val / 1000u);
+        buf4[1]  = (char)('0' + (val / 100u) % 10u);
+        buf4[2]  = (char)('0' + (val / 10u)  % 10u);
+        buf4[3]  = (char)('0' + val % 10u);
+        *dp_mask = HT1621_DP1;
+    } else if (raw < 10000u) {
+        /* XX.XX: use raw directly */
+        buf4[0]  = (char)('0' + raw / 1000u);
+        buf4[1]  = (char)('0' + (raw / 100u) % 10u);
+        buf4[2]  = (char)('0' + (raw / 10u)  % 10u);
+        buf4[3]  = (char)('0' + raw % 10u);
+        *dp_mask = HT1621_DP2;
+    } else {
+        /* Scale to x0.1 A for XXX.X display */
+        val      = raw / 10u;
+        buf4[0]  = (char)('0' + val / 1000u);
+        buf4[1]  = (char)('0' + (val / 100u) % 10u);
+        buf4[2]  = (char)('0' + (val / 10u)  % 10u);
+        buf4[3]  = (char)('0' + val % 10u);
+        *dp_mask = HT1621_DP3;
+    }
+}
+
+/**
+ * @brief  Build display content for one carousel page.
+ *
+ *   Page 0: role string         Page 1: "L1  "   Page 2: L1 current
+ *   Page 3: "L2  "              Page 4: L2 current
+ *   Page 5: "L3  "              Page 6: L3 current
+ *
+ * @param  page     0..6
+ * @param  role     Current configured role (0 = unconfigured).
+ * @param  curr3    3-element array of x0.01 A currents: [0]=L1, [1]=L2, [2]=L3.
+ * @param  buf4     Output 4-char display buffer (NOT null-terminated).
+ * @param  dp_mask  Output dot_mask.
+ */
+static void format_page(uint8_t page, uint8_t role, const uint16_t *curr3,
+                        char *buf4, uint8_t *dp_mask)
+{
+    switch (page) {
+        case 0:
+            format_role_str(role, buf4, dp_mask);
+            break;
+        case 1:
+            buf4[0] = 'L'; buf4[1] = '1'; buf4[2] = ' '; buf4[3] = ' ';
+            *dp_mask = HT1621_DP_NONE;
+            break;
+        case 2:
+            format_current(curr3[0], buf4, dp_mask);
+            break;
+        case 3:
+            buf4[0] = 'L'; buf4[1] = '2'; buf4[2] = ' '; buf4[3] = ' ';
+            *dp_mask = HT1621_DP_NONE;
+            break;
+        case 4:
+            format_current(curr3[1], buf4, dp_mask);
+            break;
+        case 5:
+            buf4[0] = 'L'; buf4[1] = '3'; buf4[2] = ' '; buf4[3] = ' ';
+            *dp_mask = HT1621_DP_NONE;
+            break;
+        default: /* case 6 */
+            format_current(curr3[2], buf4, dp_mask);
+            break;
+    }
+}
+
+/*============================================================================
+ * Thread_Display: LCD 顯示與按鈕狀態機
+ *
+ * 50 ms tick 主迴圈。
+ *
+ * NORMAL 狀態：
+ *   7 頁輪播，每頁 2 s (= 40 ticks)。
+ *   role=0 時持續顯示 "----"，等待 commissioning。
+ *   雙鍵同時按住 >= 1.5 s (30 ticks) → 進入 SETTING。
+ *
+ * SETTING 狀態：
+ *   固定顯示候選 role 字串。
+ *   UP / DOWN 單擊循環切換 role 1..40。
+ *   雙鍵同時按住 >= 1.5 s → pdu_role_save() + NVIC_SystemReset()。
+ *============================================================================*/
+void Thread_Display(void const *argument)
+{
+    typedef enum { STATE_NORMAL = 0, STATE_SETTING } disp_state_t;
+
+    disp_state_t state        = STATE_NORMAL;
+    uint8_t      current_role = g_my_role;   /* set by main() before Init_Thread */
+    uint8_t      candidate    = current_role ? current_role : 1u;
+    uint8_t      page         = 0u;
+    uint16_t     page_ticks   = 0u;          /* ticks on current page (0..39) */
+    uint16_t     both_ticks   = 0u;          /* consecutive ticks with both buttons held */
+    uint8_t      disp_dirty   = 1u;          /* 1 = re-render needed */
+    char         buf4[5]      = { 0 };       /* [4] unused, just for safety */
+    uint8_t      dp           = HT1621_DP_NONE;
+    uint16_t     curr3[3]     = { 0u, 0u, 0u };
+
+    (void)argument;
+
+    ht1621_power_on();
+    buttons_init();
+    ht1621_clear();
+
+    dbg_log("[DISP] Thread started, role=%u node=%u bus=%u\r\n",
+            (unsigned)current_role, (unsigned)g_my_node_id, (unsigned)g_my_bus_id);
+
+    for (;;) {
+        osDelay(50u);      /* 50 ms tick */
+        btn_tick();        /* update debounce state machines */
+
+        /* Snapshot phase currents under data_mutex */
+        osMutexWait(data_mutex, osWaitForever);
+        curr3[0] = phase_metrics[1].current;  /* L1 */
+        curr3[1] = phase_metrics[2].current;  /* L2 */
+        curr3[2] = phase_metrics[3].current;  /* L3 */
+        osMutexRelease(data_mutex);
+
+        /* Dual-button long-press accumulator (capped to prevent overflow) */
+        if (btn_is_held(BTN_UP) && btn_is_held(BTN_DOWN)) {
+            if (both_ticks < 0xFFFFu) { both_ticks++; }
+        } else {
+            both_ticks = 0u;
+        }
+
+        /* ================================================================
+         * NORMAL state: 7-page carousel
+         * ================================================================ */
+        if (state == STATE_NORMAL) {
+
+            /* Drain single-press events — not used in NORMAL mode */
+            (void)btn_just_pressed(BTN_UP);
+            (void)btn_just_pressed(BTN_DOWN);
+
+            if (current_role == 0u) {
+                /* Unconfigured: show "----" until user commissions the node */
+                if (disp_dirty) {
+                    ht1621_show_text("----", HT1621_DP_NONE);
+                    disp_dirty = 0u;
+                }
+            } else {
+                /* Advance page every 2 s */
+                if (++page_ticks >= 40u) {
+                    page_ticks = 0u;
+                    page       = (uint8_t)((page + 1u) % 7u);
+                    disp_dirty = 1u;
+                }
+                if (disp_dirty) {
+                    format_page(page, current_role, curr3, buf4, &dp);
+                    ht1621_show_text(buf4, dp);
+                    disp_dirty = 0u;
+                }
+            }
+
+            /* Transition: dual hold >= 1.5 s -> SETTING */
+            if (both_ticks >= 30u) {
+                both_ticks = 0u;
+                candidate  = current_role ? current_role : 1u;
+                page_ticks = 0u;
+                state      = STATE_SETTING;
+                disp_dirty = 1u;
+                /* Clear any accumulated single-press events before entering SETTING */
+                (void)btn_just_pressed(BTN_UP);
+                (void)btn_just_pressed(BTN_DOWN);
+                dbg_log("[DISP] -> SETTING (candidate=%u)\r\n", (unsigned)candidate);
+            }
+
+        /* ================================================================
+         * SETTING state: role selection
+         * ================================================================ */
+        } else {
+
+            /* Single-press navigation — only when not in a dual-hold sequence */
+            if (both_ticks == 0u) {
+                if (btn_just_pressed(BTN_UP)) {
+                    candidate  = (candidate < 40u) ? (uint8_t)(candidate + 1u) : 1u;
+                    disp_dirty = 1u;
+                    dbg_log("[SETTING] UP   -> candidate=%u\r\n", (unsigned)candidate);
+                }
+                if (btn_just_pressed(BTN_DOWN)) {
+                    candidate  = (candidate > 1u) ? (uint8_t)(candidate - 1u) : 40u;
+                    disp_dirty = 1u;
+                    dbg_log("[SETTING] DOWN -> candidate=%u\r\n", (unsigned)candidate);
+                }
+            } else {
+                /* Drain events during hold to prevent spurious presses after release */
+                (void)btn_just_pressed(BTN_UP);
+                (void)btn_just_pressed(BTN_DOWN);
+                /* Log dual-hold progress every 0.5 s (10 ticks) */
+                if ((both_ticks % 10u) == 0u) {
+                    dbg_log("[SETTING] both held %u ticks (%u ms), UP=%u DOWN=%u\r\n",
+                            (unsigned)both_ticks,
+                            (unsigned)(both_ticks * 50u),
+                            (unsigned)btn_is_held(BTN_UP),
+                            (unsigned)btn_is_held(BTN_DOWN));
+                }
+            }
+
+            /* Confirm: dual hold >= 1.5 s -> save to Flash + reset */
+            if (both_ticks >= 30u) {
+                dbg_log("[SETTING] confirm: saving role=%u to Flash addr=0x0800FC00\r\n",
+                        (unsigned)candidate);
+                ht1621_show_text("----", HT1621_DP_NONE);
+                if (pdu_role_save(candidate) == 0) {
+                    dbg_log("[SETTING] save OK, rebooting...\r\n");
+                    osDelay(500u);          /* brief pause before reset */
+                    NVIC_SystemReset();     /* reboot with new role */
+                }
+                /* Save failed: clear counter, mark dirty to re-render candidate */
+                dbg_log("[SETTING] pdu_role_save FAILED, returning to selection\r\n");
+                both_ticks = 0u;
+                disp_dirty = 1u;
+                continue;                   /* skip render this tick */
+            }
+
+            /* Render candidate role */
+            if (disp_dirty) {
+                format_role_str(candidate, buf4, &dp);
+                ht1621_show_text(buf4, dp);
+                dbg_log("[SETTING] render: '%c%c%c%c' dp=0x%02X\r\n",
+                        buf4[0], buf4[1], buf4[2], buf4[3], (unsigned)dp);
+                disp_dirty = 0u;
+            }
+        }
     }
 }

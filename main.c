@@ -14,24 +14,17 @@
 #include  <stdio.h>
 
 extern int Init_Thread (void);
-void Peripheral_gpio_init(void);
 
 /*
  * main: initialize and start the system
  */
 int main (void) {
-    // initialize peripherals here
-    Peripheral_gpio_init();
-
-    // HT1621 LCD: power on Vdd, init, run visual self-test (~10 s busy-wait)
-    ht1621_init();
-    ht1621_selftest();
-
-    // Buttons: PB7 (UP), PB8 (DOWN) input with pull-up
-    buttons_init();
 
     // initialize CMSIS-RTOS
     osKernelInitialize();
+
+    // HT1621 LCD: configure GPIO (PB3=DATA, PB5=WR, PB7=CS) before RTOS starts
+    ht1621_init();
 
     // Initial uart
     UART2_NVIC_Init(115200);
@@ -40,67 +33,30 @@ int main (void) {
     // Initial Modbus RTU on UART1 (RS-485, 9600 baud)
     modbus_init();
 
-    // Initial CAN BUS
-    CAN_NVIC_Init();
+    // Load PDU role from Flash; set node/bus globals used by all threads
+    {
+        uint8_t role = pdu_role_load();
+        g_my_role = role;
+        if (role != 0u) {
+            g_my_bus_id  = (uint8_t)((role - 1u) / 20u + 1u);
+            g_my_node_id = (uint8_t)((role - 1u) % 20u + 1u);
+            // Initial CAN BUS (only when a valid role is configured)
+            CAN_NVIC_Init();
+        }
+    }
 
-    // IWDG reset and start
-    IWDG_ResetTest();
+    // IWDG: temporarily disabled while debugging boot path
+    //IWDG_ResetTest();
 
     // create 'thread' functions that start executing,
     Init_Thread ();
 
     // start thread execution
     osKernelStart();
-    
-    while(1)
-    {
+
+    while (1) {
         osDelay(1000);
-        //printf("Reset dog!\r\n");
-        //feed dog,After shielding, reset causes led flicker.
-        Write_Iwdg_RL();
+        //Write_Iwdg_RL();   /* IWDG disabled */
     }
 }
 
-void Peripheral_gpio_init()
-{
-    // Meter A  PA1
-    // Meter B  PA0
-    // Meter C  PB4  -- reassigned: HT1621 DATA
-    // Meter D  PB5  -- reassigned: HT1621 WR
-
-    // Relay 1  PB1
-    // Relay 2  PB0
-    // Relay 3  PA7
-    // Relay 4  PA6
-    // Relay 5  PA5
-    // Relay 6  PA4
-    // Relay 7  PB2
-    // Relay 8  PA8 -- now used as RS-485 DE pin (modbus_init handles it)
-    // Relay 9  PA11
-    // Relay 10 PA12
-    // Relay 11 PA15
-    // Relay 12 PB3  -- reassigned: HT1621 Vdd (hardware reworked)
-    //
-    // NOTE: PB3 (HT1621 Vdd), PB4 (HT1621 DATA), PB5 (HT1621 WR),
-    //       PB6 (HT1621 CS), PB7 (BTN_UP), PB8 (BTN_DOWN) are
-    //       configured by ht1621_init() / buttons_init() — NOT here.
-
-    GPIO_InitTypeDef GPIO_InitStructure;
-
-    RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOA, ENABLE);
-    RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOB, ENABLE);
-
-    GPIO_StructInit(&GPIO_InitStructure);
-
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1 | GPIO_Pin_4 | GPIO_Pin_5 | GPIO_Pin_6 | GPIO_Pin_7 | GPIO_Pin_11 | GPIO_Pin_12 | GPIO_Pin_15;
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
-    GPIO_Init(GPIOA, &GPIO_InitStructure);
-
-    /* PB0, PB1, PB2 = Relay 2, 1, 7 only.
-     * PB3-PB8 are handled by ht1621_init() and buttons_init(). */
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1 | GPIO_Pin_2;
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
-    GPIO_Init(GPIOB, &GPIO_InitStructure);
-}

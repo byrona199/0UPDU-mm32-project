@@ -25,7 +25,9 @@
  * Constants
  *============================================================================*/
 #define PDU_ROLE_MAGIC       0x50445500UL   /* "PDU\0"                       */
-#define PDU_ROLE_FLASH_ADDR  0x08003C00UL   /* last 1 KB page of 16 KB Flash */
+#define PDU_ROLE_FLASH_ADDR  0x0800FC00UL   /* last 1 KB page of 64 KB Flash */
+                                            /* 64KB: 0x08000000-0x0800FFFF   */
+                                            /* page 63 = base + 63*0x400     */
 #define PDU_ROLE_MIN         1u
 #define PDU_ROLE_MAX         40u
 
@@ -67,6 +69,8 @@ int pdu_role_save(uint8_t role)
     __disable_irq();
 
     FLASH_Unlock();
+    /* Clear any stale error/EOP flags before starting (ref: MindMotion flash example) */
+    FLASH_ClearFlag((u16)(FLASH_FLAG_EOP | FLASH_FLAG_PGERR | FLASH_FLAG_WRPRTERR));
 
     /* Erase the target page (all bytes → 0xFF) */
     st = FLASH_ErasePage(PDU_ROLE_FLASH_ADDR);

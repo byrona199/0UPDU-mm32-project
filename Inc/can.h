@@ -39,9 +39,10 @@
  * TODO: Read MY_NODE_ID from DIP-switch / GPIO strap pins at boot.
  *       Replace compile-time default once hardware is ready.
  *============================================================================*/
-#ifndef MY_NODE_ID
-#define MY_NODE_ID  1   /* Override with -DMY_NODE_ID=N in Keil project */
-#endif
+extern volatile uint8_t g_my_node_id;  /* 1..20, 0 = not configured */
+extern volatile uint8_t g_my_bus_id;   /* 1 or 2, 0 = not configured */
+extern volatile uint8_t g_my_role;     /* 1..40, 0 = not configured */
+#define MY_NODE_ID  g_my_node_id       /* keep existing usages working */
 
 /*============================================================================
  * CAN Frame Type Constants (MM32 HAL)

@@ -39,7 +39,7 @@
 //   <i> Defines max. number of user threads that will run at the same time.
 //   <i> Default: 6
 #ifndef OS_TASKCNT
- #define OS_TASKCNT     6
+ #define OS_TASKCNT     7
 #endif
  
 //   <o>Default Thread stack size [bytes] <64-4096:8><#/4>
@@ -53,21 +53,34 @@
 //   <i> Defines stack size for main thread.
 //   <i> Default: 200
 #ifndef OS_MAINSTKSIZE
- #define OS_MAINSTKSIZE 50      // this stack size value is in words
+ /* Words. Keep at 50 (200 B) — MM32F0131C4P has only 16 KB SRAM and the
+  * RTX pool (OS_PRIVSTKSIZE 2560 words = 10 KB) plus app .bss / startup MSP
+  * / heap already consume nearly all of it. Bumping this to 256 words
+  * overflowed SRAM and the firmware would not boot.
+  *
+  * main() must stay lightweight: no dbg_log, no large locals. dbg_buf in
+  * Thread.c is static (lives in .bss, not on stack). */
+ #define OS_MAINSTKSIZE 50
 #endif
  
 //   <o>Number of threads with user-provided stack size <0-250>
 //   <i> Defines the number of threads with user-provided stack size.
 //   <i> Default: 0
 #ifndef OS_PRIVCNT
- #define OS_PRIVCNT     4
+ #define OS_PRIVCNT     5
 #endif
  
 //   <o>Total stack size [bytes] for threads with user-provided stack size <0-1048576:8><#/4>
 //   <i> Defines the combined stack size for threads with user-provided stack size.
 //   <i> Default: 0
 #ifndef OS_PRIVSTKSIZE
- #define OS_PRIVSTKSIZE 1344       // this stack size value is in words (4 threads: 384+128+256+320 = 1088 + margin)
+ /* Words. 5 user-stack threads sum to 1472 words; bumped to 2560 to leave
+  * generous margin for 8-byte alignment padding + RTX watermark/sentinel
+  * (previous 1536 caused hard-fault inside osThreadCreate(Thread_Display)).
+  *   UART_outlet_stat 2048B / Metering 1024B / CAN_RX 1536B / CAN_Connect 512B / Display 768B
+  *   = 5888B = 1472 words.
+  */
+ #define OS_PRIVSTKSIZE 2560
 #endif
  
 //   <q>Stack overflow checking

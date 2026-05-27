@@ -25,6 +25,10 @@
 CanPeliRxMsg gCanPeliRxMsgBuff;
 CanTxMsg     gCanTxMsgBuff;
 
+volatile uint8_t g_my_node_id = 0u;   /* 1..20, 0 = not configured */
+volatile uint8_t g_my_bus_id  = 0u;   /* 1 or 2, 0 = not configured */
+volatile uint8_t g_my_role    = 0u;   /* 1..40, 0 = not configured */
+
 /*============================================================================
  * Internal: CAN GPIO Setup (PA11=RX, PA12=TX)
  *============================================================================*/

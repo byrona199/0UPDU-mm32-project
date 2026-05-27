@@ -31,42 +31,58 @@
 
 /*============================================================================
  * GPIO Assignments (3-wire bit-bang, all on GPIOB)
+ *
+ * New pin mapping (hardware re-wired to avoid PB4/PB5 short):
+ *   PB3 = DATA   PB5 = WR (unchanged)   PB7 = CS
+ * BTN_UP moved to PB9 (was PB7, now freed for CS).
+ * VDD: hard-wired to +3.3V on PCB — no MCU control needed.
  *============================================================================*/
-#define HT1621_VDD_PORT     GPIOB
-#define HT1621_VDD_PIN      GPIO_Pin_3  /* PB3: controls HT1621 Vdd power switch */
 #define HT1621_CS_PORT      GPIOB
-#define HT1621_CS_PIN       GPIO_Pin_6  /* PB6: chip select (active low) */
+#define HT1621_CS_PIN       GPIO_Pin_7  /* PB7: chip select (active low) */
 #define HT1621_WR_PORT      GPIOB
 #define HT1621_WR_PIN       GPIO_Pin_5  /* PB5: write clock */
 #define HT1621_DATA_PORT    GPIOB
-#define HT1621_DATA_PIN     GPIO_Pin_4  /* PB4: serial data */
+#define HT1621_DATA_PIN     GPIO_Pin_3  /* PB3: serial data */
 
 /*============================================================================
  * dot_mask bit positions for ht1621_show_text()
- * Note: decimal point after digit 1 is NOT present in the LCD hardware.
+ * Note: decimal point after digit 4 is NOT present in the LCD hardware.
  *============================================================================*/
 #define HT1621_DP_NONE      0x00u
+#define HT1621_DP1          0x01u  /* decimal point after digit 1 */
 #define HT1621_DP2          0x02u  /* decimal point after digit 2 */
 #define HT1621_DP3          0x04u  /* decimal point after digit 3 */
-#define HT1621_DP4          0x08u  /* decimal point after digit 4 */
+
+/*============================================================================
+ * Command codes (exposed for step-by-step diagnostic in Thread_Display)
+ *============================================================================*/
+#define HT1621_CMD_SYS_DIS   0x00u
+#define HT1621_CMD_SYS_EN    0x01u
+#define HT1621_CMD_LCD_OFF   0x02u
+#define HT1621_CMD_LCD_ON    0x03u
+#define HT1621_CMD_RC_256K   0x18u
+#define HT1621_CMD_BIAS      0x29u  /* 1/3 bias, 1/4 duty (4 commons) */
 
 /*============================================================================
  * Public API
  *============================================================================*/
 
-/**
- * @brief  Power on Vdd (PB3 high), configure GPIO, send HT1621 init commands.
- *         Busy-waits ~60 ms for power-on stabilisation — call before RTOS.
- */
+/** @brief  Configure PB3 (DATA), PB5 (WR), PB7 (CS) as Output PP. */
 void ht1621_init(void);
 
-/**
- * @brief  Display a 4-character string with optional decimal points.
- * @param  text     Pointer to exactly 4 characters. Supported chars:
- *                  '0'-'9', 'A', 'C', 'E', 'L', 'n', 'd', ' ', '-'.
- *                  Unknown chars render as blank.
- * @param  dot_mask Bitmask: HT1621_DP2 | HT1621_DP3 | HT1621_DP4.
- */
+/** @brief  Send init commands (SYS_EN, RC_256K, BIAS, LCD_ON). No RAM clear. */
+void ht1621_power_on(void);
+
+/** @brief  Send a single HT1621 command byte. For diagnostic use. */
+void send_cmd_pub(uint8_t cmd);
+
+/** @brief  Write 0x0F to all 8 RAM nibbles (all segments ON). Bypasses font mapping. */
+void ht1621_all_on(void);
+
+/** @brief  Clear all RAM (all segments OFF). */
+void ht1621_clear(void);
+
+/** @brief  Display a 4-character string with optional decimal points. */
 void ht1621_show_text(const char *text, uint8_t dot_mask);
 
 /**
