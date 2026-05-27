@@ -419,6 +419,21 @@
               <FileType>1</FileType>
               <FilePath>.\modbus_rtu.c</FilePath>
             </File>
+            <File>
+              <FileName>buttons.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\buttons.c</FilePath>
+            </File>
+            <File>
+              <FileName>ht1621.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\ht1621.c</FilePath>
+            </File>
+            <File>
+              <FileName>pdu_role.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\pdu_role.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
