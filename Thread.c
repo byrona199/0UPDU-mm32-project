@@ -21,6 +21,7 @@
 #include "ht1621.h"
 #include "buttons.h"
 #include "pdu_role.h"
+#include "env_source.h"
 #include "dbg_log.h"
 #include <stdio.h>
 #include <stdarg.h>
@@ -127,6 +128,10 @@ extern u16 SendLen;
 static can_metrics_t phase_metrics[CAN_TOTAL_PHASES];  /* [0]=total, [1]=L1, [2]=L2, [3]=L3 */
 static uint16_t      frequency_fp;                     /* ×0.01Hz */
 static uint8_t       phase_type;                       /* 0=single, 1=three-phase */
+
+static int16_t  env_temp_x10;   /* ×0.1°C，有號（env_source 提供）*/
+static uint16_t env_humi_x10;   /* ×0.1%RH */
+static uint8_t  env_valid;      /* CAN_ENV_VALID_* bits，0=無感測器 */
 
 /** @brief Per-outlet metrics */
 static can_metrics_t outlet_metrics[MAX_OUTLET];
@@ -276,6 +281,9 @@ static void prepare_burst_snapshot(void)
     can_power_payload_burst.phases[0]  = phase_metrics[1];
     can_power_payload_burst.phases[1]  = phase_metrics[2];
     can_power_payload_burst.phases[2]  = phase_metrics[3];
+    can_power_payload_burst.temperature = env_temp_x10;
+    can_power_payload_burst.humidity    = env_humi_x10;
+    can_power_payload_burst.env_valid   = env_valid;
 
     /* Outlet state: 3 bits per outlet, LSB-first */
     memset(outlet_state_burst, 0, sizeof(outlet_state_burst));
@@ -429,19 +437,29 @@ void Thread_CAN_RX(void const *argument)
 }
 
 /*============================================================================
- * Thread_Metering: Reserved for future ADC sampling
+ * Thread_Metering: Environment polling + reserved for future ADC sampling
  *
  * Metering data is now populated by Thread_UART_outlet_stat via Modbus.
- * This thread is kept as a placeholder for local ADC / meter IC reads.
+ * This thread polls env_source (temperature/humidity) once per second and
+ * is kept as a placeholder for local ADC / meter IC reads.
  *============================================================================*/
 void Thread_Metering(void const *argument)
 {
     (void)argument;
 
-    dbg_log("[METER] Thread started (placeholder, data from Modbus)\r\n");
+    dbg_log("[METER] Thread started (env polling + placeholder for local ADC)\r\n");
 
     for (;;) {
-        /* TODO: If local ADC/meter IC is needed in the future, add here */
+        int16_t  t;
+        uint16_t h;
+        uint8_t  valid = env_source_read(&t, &h);
+
+        osMutexWait(data_mutex, osWaitForever);
+        if (valid & CAN_ENV_VALID_TEMP) env_temp_x10 = t;
+        if (valid & CAN_ENV_VALID_HUMI) env_humi_x10 = h;
+        env_valid = valid;
+        osMutexRelease(data_mutex);
+
         osDelay(1000);
     }
 }
