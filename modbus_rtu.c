@@ -1,10 +1,10 @@
 /**
  * @file modbus_rtu.c
- * @brief Modbus RTU Master implementation over UART1/RS-485.
+ * @brief Modbus RTU Master implementation over UART2/RS-485.
  *
  * TX: polling (UART_SendData + wait TXC flag)
- * RX: interrupt ring buffer (UART1_IRQHandler in uart_txrx_interrupt.c)
- * DE: PA8 GPIO for RS-485 direction control
+ * RX: interrupt ring buffer (UART2_IRQHandler in uart_txrx_interrupt.c)
+ * DE: PB1 GPIO for RS-485 direction control
  *
  * All raw TX/RX bytes are logged via dbg_log() for protocol debugging.
  */
@@ -20,7 +20,7 @@
 #include "dbg_log.h"
 
 /*============================================================================
- * RX Ring Buffer (shared with UART1_IRQHandler)
+ * RX Ring Buffer (shared with UART2_IRQHandler)
  *============================================================================*/
 volatile uint8_t  mb_rx_buf[MB_RX_BUF_SIZE];
 volatile uint16_t mb_rx_head = 0;
@@ -101,7 +101,7 @@ static void mb_rx_flush(void)
 }
 
 /*============================================================================
- * Internal: UART1 TX (polling mode) with DE control
+ * Internal: UART2 TX (polling mode) with DE control
  *============================================================================*/
 
 static void mb_send_frame(const uint8_t *data, uint16_t len)
@@ -113,12 +113,12 @@ static void mb_send_frame(const uint8_t *data, uint16_t len)
     /* Small delay for DE setup time (~10us at 9600 baud is negligible) */
 
     for (i = 0; i < len; i++) {
-        UART_SendData(UART1, data[i]);
-        while (!UART_GetFlagStatus(UART1, UART_FLAG_TXEPT));
+        UART_SendData(UART2, data[i]);
+        while (!UART_GetFlagStatus(UART2, UART_FLAG_TXEPT));
     }
 
     /* Wait for last byte to fully shift out */
-    while (!UART_GetFlagStatus(UART1, UART_CSR_TXC));
+    while (!UART_GetFlagStatus(UART2, UART_CSR_TXC));
 
     MB_DE_LOW();   /* Switch to RX mode */
 }
@@ -238,21 +238,21 @@ void modbus_init(void)
 {
     GPIO_InitTypeDef GPIO_InitStructure;
 
-    /* Initialize UART1 for 9600/8N1 */
+    /* Initialize UART2 for 9600/8N1 */
     {
         UART_InitTypeDef UART_InitStructure;
         NVIC_InitTypeDef NVIC_InitStructure;
 
-        RCC_APB2PeriphClockCmd(RCC_APB2Periph_UART1, ENABLE);
+        RCC_APB1PeriphClockCmd(RCC_APB1Periph_UART2, ENABLE);
         RCC_AHBPeriphClockCmd(RCC_AHBENR_GPIOA, ENABLE);
 
-        /* NVIC for UART1 RX interrupt */
-        NVIC_InitStructure.NVIC_IRQChannel = UART1_IRQn;
-        NVIC_InitStructure.NVIC_IRQChannelPriority = 2;  /* Higher than UART2 (3) */
+        /* NVIC for UART2 RX interrupt */
+        NVIC_InitStructure.NVIC_IRQChannel = UART2_IRQn;
+        NVIC_InitStructure.NVIC_IRQChannelPriority = 2;  /* Higher priority than debug UART1 (3) */
         NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
         NVIC_Init(&NVIC_InitStructure);
 
-        /* UART1 config: 9600 / 8N1 */
+        /* UART2 config: 9600 / 8N1 */
         UART_StructInit(&UART_InitStructure);
         UART_InitStructure.BaudRate = MB_BAUDRATE;
         UART_InitStructure.WordLength = UART_WordLength_8b;
@@ -261,27 +261,28 @@ void modbus_init(void)
         UART_InitStructure.HWFlowControl = UART_HWFlowControl_None;
         UART_InitStructure.Mode = UART_Mode_Rx | UART_Mode_Tx;
 
-        UART_Init(UART1, &UART_InitStructure);
+        UART_Init(UART2, &UART_InitStructure);
         /* Only enable RX interrupt; TX uses polling */
-        UART_ITConfig(UART1, UART_IT_RXIEN, ENABLE);
-        UART_Cmd(UART1, ENABLE);
+        UART_ITConfig(UART2, UART_IT_RXIEN, ENABLE);
+        UART_Cmd(UART2, ENABLE);
 
-        /* GPIO: PA9=TX (AF_PP), PA10=RX (FLOATING) */
-        GPIO_PinAFConfig(GPIOA, GPIO_PinSource9, GPIO_AF_1);
-        GPIO_PinAFConfig(GPIOA, GPIO_PinSource10, GPIO_AF_1);
+        /* GPIO: PA2=TX (AF_PP), PA3=RX (FLOATING) */
+        GPIO_PinAFConfig(GPIOA, GPIO_PinSource2, GPIO_AF_1);
+        GPIO_PinAFConfig(GPIOA, GPIO_PinSource3, GPIO_AF_1);
 
         GPIO_StructInit(&GPIO_InitStructure);
-        GPIO_InitStructure.GPIO_Pin = GPIO_Pin_9;
+        GPIO_InitStructure.GPIO_Pin = GPIO_Pin_2;
         GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
         GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;
         GPIO_Init(GPIOA, &GPIO_InitStructure);
 
-        GPIO_InitStructure.GPIO_Pin = GPIO_Pin_10;
+        GPIO_InitStructure.GPIO_Pin = GPIO_Pin_3;
         GPIO_InitStructure.GPIO_Mode = GPIO_Mode_FLOATING;
         GPIO_Init(GPIOA, &GPIO_InitStructure);
     }
 
-    /* PA8 = DE pin (Push-Pull output, default LOW = RX mode) */
+    /* PB1 = DE pin (Push-Pull output, default LOW = RX mode) */
+    RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOB, ENABLE);
     GPIO_StructInit(&GPIO_InitStructure);
     GPIO_InitStructure.GPIO_Pin = MB_DE_PIN;
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;

@@ -1,8 +1,8 @@
 /**
  * @file modbus_rtu.h
- * @brief Modbus RTU Master driver for UART1/RS-485.
+ * @brief Modbus RTU Master driver for UART2/RS-485.
  *
- * Hardware: PA9=TX, PA10=RX, PA8=DE (RS-485 direction)
+ * Hardware: PA2=TX, PA3=RX, PB1=DE (RS-485 direction)
  * Baud rate: 9600, 8N1
  * TX: polling mode
  * RX: interrupt-driven ring buffer
@@ -24,7 +24,7 @@
 #define MB_INTER_FRAME_MS       5       /* 3.5 char silence at 9600 ~ 4ms, use 5ms */
 #define MB_BUS_QUIET_MS         15      /* Bus idle window required before retry / next request */
 #define MB_BUS_QUIET_MAX_MS     250     /* Cap total drain wait so we never hang forever */
-#define MB_RX_BUF_SIZE          256     /* Ring buffer for UART1 RX ISR */
+#define MB_RX_BUF_SIZE          256     /* Ring buffer for UART2 RX ISR */
 
 /*============================================================================
  * Modbus Function Codes
@@ -48,17 +48,17 @@
 #define MB_ERR_SHORT_RESP      -6
 
 /*============================================================================
- * RS-485 DE Pin Control (PA8)
+ * RS-485 DE Pin Control (PB1)
  *============================================================================*/
 
-#define MB_DE_PORT              GPIOA
-#define MB_DE_PIN               GPIO_Pin_8
+#define MB_DE_PORT              GPIOB
+#define MB_DE_PIN               GPIO_Pin_1
 
 #define MB_DE_HIGH()            GPIO_SetBits(MB_DE_PORT, MB_DE_PIN)
 #define MB_DE_LOW()             GPIO_ResetBits(MB_DE_PORT, MB_DE_PIN)
 
 /*============================================================================
- * RX Ring Buffer (written by UART1 ISR, read by modbus_rtu.c)
+ * RX Ring Buffer (written by UART2 ISR, read by modbus_rtu.c)
  *============================================================================*/
 
 extern volatile uint8_t  mb_rx_buf[MB_RX_BUF_SIZE];
@@ -70,7 +70,7 @@ extern volatile uint16_t mb_rx_tail;    /* Consumer reads here */
  *============================================================================*/
 
 /**
- * @brief Initialize UART1 for Modbus RTU (9600/8N1) + PA8 DE pin.
+ * @brief Initialize UART2 for Modbus RTU (9600/8N1) + PB1 DE pin.
  *        Call once from main() before osKernelStart().
  */
 void modbus_init(void);

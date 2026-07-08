@@ -28,7 +28,7 @@
 /*============================================================================
  * State (all module-private)
  *============================================================================*/
-static const uint16_t s_pin[BTN_COUNT]  = { GPIO_Pin_9, GPIO_Pin_8 };
+static const uint16_t s_pin[BTN_COUNT]  = { GPIO_Pin_10, GPIO_Pin_9 };
 
 static uint8_t s_cnt_pressed[BTN_COUNT];   /* consecutive pressed samples   */
 static uint8_t s_cnt_released[BTN_COUNT];  /* consecutive released samples  */
@@ -42,13 +42,13 @@ void buttons_init(void)
 {
     GPIO_InitTypeDef GPIO_InitStructure;
 
-    RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOB, ENABLE);
+    RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOA, ENABLE);
 
     GPIO_StructInit(&GPIO_InitStructure);
-    GPIO_InitStructure.GPIO_Pin   = GPIO_Pin_9 | GPIO_Pin_8;
+    GPIO_InitStructure.GPIO_Pin   = GPIO_Pin_9 | GPIO_Pin_10;
     GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_IPU;  /* internal pull-up */
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;
-    GPIO_Init(GPIOB, &GPIO_InitStructure);
+    GPIO_Init(GPIOA, &GPIO_InitStructure);
 }
 
 /*============================================================================
@@ -60,7 +60,7 @@ void btn_tick(void)
 
     for (i = 0u; i < BTN_COUNT; i++) {
         /* active-low: GPIO reads Bit_RESET (0) when button is pressed */
-        uint8_t raw = (GPIO_ReadInputDataBit(GPIOB, s_pin[i]) == Bit_RESET) ? 1u : 0u;
+        uint8_t raw = (GPIO_ReadInputDataBit(GPIOA, s_pin[i]) == Bit_RESET) ? 1u : 0u;
 
         if (raw) {
             /* Button physically pressed */

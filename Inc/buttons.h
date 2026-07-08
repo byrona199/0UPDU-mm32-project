@@ -27,15 +27,15 @@
 /*============================================================================
  * Button Indices
  *============================================================================*/
-#define BTN_UP    0u  /* PB9 */
-#define BTN_DOWN  1u  /* PB8 */
+#define BTN_UP    0u  /* PA10 */
+#define BTN_DOWN  1u  /* PA9 */
 
 /*============================================================================
  * Public API
  *============================================================================*/
 
 /**
- * @brief  Configure PB9 (BTN_UP) and PB8 (BTN_DOWN) as input with pull-up.
+ * @brief  Configure PA10 (BTN_UP) and PA9 (BTN_DOWN) as input with pull-up.
  *         Call once during peripheral initialisation.
  */
 void buttons_init(void);

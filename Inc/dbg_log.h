@@ -1,12 +1,8 @@
 /**
  * @file dbg_log.h
- * @brief UART2 debug log switch.
+ * @brief UART1 (PA1/PA0) debug log switch.
  *
- * Set ENABLE_DBG_LOG to 0 to compile out all dbg_log() calls
- * (saves ~256 B SRAM for the static buffer, ~28 B for the mutex CB,
- * plus per-thread stack savings since vsnprintf consumes ~300 B
- * of caller stack). Linker will also strip printfa.o (~2.3 KB Flash)
- * and all log format-string literals when no caller remains.
+ * Set ENABLE_DBG_LOG to 1 to enable output on UART1.
  */
 #ifndef __DBG_LOG_H
 #define __DBG_LOG_H

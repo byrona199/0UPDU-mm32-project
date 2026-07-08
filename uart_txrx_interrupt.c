@@ -75,18 +75,18 @@ void UART1_GPIO_Init(void)
 
     RCC_AHBPeriphClockCmd(RCC_AHBENR_GPIOA, ENABLE);
 
-    GPIO_PinAFConfig(GPIOA, GPIO_PinSource9, GPIO_AF_1);
-    GPIO_PinAFConfig(GPIOA, GPIO_PinSource10, GPIO_AF_1);
+    GPIO_PinAFConfig(GPIOA, GPIO_PinSource0, GPIO_AF_1);
+    GPIO_PinAFConfig(GPIOA, GPIO_PinSource1, GPIO_AF_1);
 
-    //UART1_TX   GPIOA.9
+    //UART1_TX   GPIOA.1
     GPIO_StructInit(&GPIO_InitStructure);
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_9;
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_1;
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;
     GPIO_Init(GPIOA, &GPIO_InitStructure);
 
-    //UART1_RX    GPIOA.10
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_10;
+    //UART1_RX    GPIOA.0
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_FLOATING;
     GPIO_Init(GPIOA, &GPIO_InitStructure);
 }
@@ -187,21 +187,29 @@ void UART2_NVIC_Init(u32 baudrate)
 /// @retval None.
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief  UART1 Interrupt Handler — Modbus RTU RX only.
-///         Writes received bytes into the Modbus ring buffer (mb_rx_buf).
-///         TX is handled by polling in modbus_rtu.c.
-/// @note   This replaces the original buggy handler that referenced UART2.
+/// @brief  UART1 Interrupt Handler — currently unused.
+///         UART1 (PA1=TX, PA0=RX) is used for polled dbg_log() output only,
+///         so no RX/TX interrupt handling is required here.
+/// @note   Modbus RTU RX handling now lives in UART2_IRQHandler below.
 /// @param  None.
 /// @retval None.
 ////////////////////////////////////////////////////////////////////////////////
 void UART1_IRQHandler(void)
 {
+    /* UART1 is currently unused as Modbus moved to UART2.
+     * Original handler logic removed to avoid confusion. */
+}
+/// @brief  UART2 Interrupt Handler — Modbus RTU RX only.
+///         Writes received bytes into the Modbus ring buffer (mb_rx_buf).
+///         TX is handled by polling in modbus_rtu.c.
+void UART2_IRQHandler(void)
+{
     uint8_t byte;
 
     /* RX interrupt */
-    if (UART_GetITStatus(UART1, UART_ISR_RX) != RESET) {
-        UART_ClearITPendingBit(UART1, UART_ISR_RX);
-        byte = (uint8_t)UART_ReceiveData(UART1);
+    if (UART_GetITStatus(UART2, UART_ISR_RX) != RESET) {
+        UART_ClearITPendingBit(UART2, UART_ISR_RX);
+        byte = (uint8_t)UART_ReceiveData(UART2);
 
         /* Write to Modbus ring buffer (drop byte if full) */
         {
@@ -213,54 +221,9 @@ void UART1_IRQHandler(void)
         }
     }
 
-    /* TX interrupt — should not fire (we only enabled RXIEN), clear if it does */
-    if (UART_GetITStatus(UART1, UART_IT_TXIEN) != RESET) {
-        UART_ClearITPendingBit(UART1, UART_IT_TXIEN);
-    }
-}
-void UART2_IRQHandler(void)
-{
-    u8 recvbyte;
-    UART_TypeDef* UARTx;
-    UART_SendIt_Typedef* pUARTxSendStruct;
-    UART_RecvIt_Typedef* pUARTxRecvStruct;
-
-    UARTx = UART2;
-    pUARTxSendStruct = &send_struct;
-    pUARTxRecvStruct = &recv_struct;
-    // Send packet
-    if (UART_GetITStatus(UARTx, UART_IT_TXIEN) != RESET) {
-        UART_ClearITPendingBit(UARTx, UART_IT_TXIEN);
-        if(pUARTxSendStruct->UART_SendComplete == false) {
-            if( pUARTxSendStruct->UART_SendLen <= pUARTxSendStruct->UART_SendRealCnt) {
-                pUARTxSendStruct->UART_SendLen = 0;
-                UART_ITConfig(UARTx, UART_IT_TXIEN, DISABLE);
-                while (!UART_GetFlagStatus(UARTx, UART_CSR_TXC));
-                pUARTxSendStruct->UART_SendComplete = true;
-            }
-            else {
-                if(pUARTxSendStruct->UART_SendRealCnt < SENDBUFLENGTH) {
-                    UART_SendData(UARTx, *(u8*)(pUARTxSendStruct->UART_SendBufferAddress + pUARTxSendStruct->UART_SendRealCnt));
-                    pUARTxSendStruct->UART_SendRealCnt++;
-                }
-            }
-        }
-    }
-    // Recv packet
-    if (UART_GetITStatus(UARTx, UART_ISR_RX) != RESET) {
-        UART_ClearITPendingBit(UARTx, UART_ISR_RX);
-        recvbyte = UART_ReceiveData(UARTx);
-        if(pUARTxRecvStruct->UART_RecvComplete == false) {
-            if(pUARTxRecvStruct->UART_RecvRealCnt < RECVBUFLENGTH) {
-                *(u8*)(pUARTxRecvStruct->UART_RecvBufferAddress + pUARTxRecvStruct->UART_RecvRealCnt) = recvbyte;
-                pUARTxRecvStruct->UART_RecvRealCnt++;
-                //if( pUARTxRecvStruct->UART_RecvLen == pUARTxRecvStruct->UART_RecvRealCnt) {
-                if( recvbyte == 0x20) { // if recieve space(0x20) recv end
-                    pUARTxRecvStruct->UART_RecvLen = 0;
-                    pUARTxRecvStruct->UART_RecvComplete = true;
-                }
-            }
-        }
+    /* TX interrupt — clear if it fires */
+    if (UART_GetITStatus(UART2, UART_IT_TXIEN) != RESET) {
+        UART_ClearITPendingBit(UART2, UART_IT_TXIEN);
     }
 }
 ////////////////////////////////////////////////////////////////////////////////
@@ -378,6 +341,18 @@ void UART2_Send_Group(u8* buf, u16 len)
 {
     while(len--)
         UART2_Send_Byte(*buf++);
+}
+
+void UART1_Send_Byte(u8 dat)
+{
+    UART_SendData(UART1, dat);
+    while(!UART_GetFlagStatus(UART1, UART_FLAG_TXEPT));
+}
+
+void UART1_Send_Group(u8* buf, u16 len)
+{
+    while(len--)
+        UART1_Send_Byte(*buf++);
 }
 
 /// @}

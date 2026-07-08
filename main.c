@@ -26,11 +26,10 @@ int main (void) {
     // HT1621 LCD: configure GPIO (PB3=DATA, PB5=WR, PB7=CS) before RTOS starts
     ht1621_init();
 
-    // Initial uart
-    UART2_NVIC_Init(115200);
-	//UART1_NVIC_Init(115200);
+    // Initial debug uart (UART1, PA1/PA0, 115200)
+    //UART1_NVIC_Init(115200);
 
-    // Initial Modbus RTU on UART1 (RS-485, 9600 baud)
+    // Initial Modbus RTU on UART2 (RS-485, 9600 baud)
     modbus_init();
 
     // Load PDU role from Flash; set node/bus globals used by all threads
@@ -38,8 +37,8 @@ int main (void) {
         uint8_t role = pdu_role_load();
         g_my_role = role;
         if (role != 0u) {
-            g_my_bus_id  = (uint8_t)((role - 1u) / 20u + 1u);
-            g_my_node_id = (uint8_t)((role - 1u) % 20u + 1u);
+            g_my_bus_id  = (uint8_t)((role - 1u) / 20u + 1u);   /* 1..2 */
+            g_my_node_id = (uint8_t)((role - 1u) % 20u + 1u);   /* 1..20 */
             // Initial CAN BUS (only when a valid role is configured)
             CAN_NVIC_Init();
         }

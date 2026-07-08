@@ -38,11 +38,11 @@
  * VDD: hard-wired to +3.3V on PCB — no MCU control needed.
  *============================================================================*/
 #define HT1621_CS_PORT      GPIOB
-#define HT1621_CS_PIN       GPIO_Pin_7  /* PB7: chip select (active low) */
+#define HT1621_CS_PIN       GPIO_Pin_6  /* PB6: chip select (active low) */
 #define HT1621_WR_PORT      GPIOB
 #define HT1621_WR_PIN       GPIO_Pin_5  /* PB5: write clock */
 #define HT1621_DATA_PORT    GPIOB
-#define HT1621_DATA_PIN     GPIO_Pin_3  /* PB3: serial data */
+#define HT1621_DATA_PIN     GPIO_Pin_4  /* PB4: serial data */
 
 /*============================================================================
  * dot_mask bit positions for ht1621_show_text()

@@ -26,7 +26,7 @@
 #include <stdarg.h>
 
 /*============================================================================
- * UART2 Debug Log (compile-time switch via dbg_log.h)
+ * UART1 Debug Log (compile-time switch via dbg_log.h)
  *============================================================================*/
 #if ENABLE_DBG_LOG
 osMutexId uart_mutex;
@@ -35,13 +35,13 @@ osMutexDef(uart_mutex);
 void dbg_log(const char *fmt, ...)
 {
     /* Static buffer is safe here because uart_mutex below serializes
-     * both the formatting and the UART2 transmit. Keeping it static
+     * both the formatting and the UART1 transmit. Keeping it static
      * avoids a 256-byte stack hit on every caller thread. */
     static char dbg_buf[256];
     va_list ap;
     int len;
 
-    /* Prevent multi-threaded logs from mixing on UART2,
+    /* Prevent multi-threaded logs from mixing on UART1,
      * and protect the shared dbg_buf above. */
     if (uart_mutex) {
         osMutexWait(uart_mutex, osWaitForever);
@@ -53,7 +53,7 @@ void dbg_log(const char *fmt, ...)
 
     if (len > 0) {
         if (len >= (int)sizeof(dbg_buf)) len = sizeof(dbg_buf) - 1;
-        UART2_Send_Group((u8 *)dbg_buf, (u16)len);
+        UART1_Send_Group((u8 *)dbg_buf, (u16)len);
     }
 
     if (uart_mutex) {
@@ -834,12 +834,29 @@ void Thread_Display(void const *argument)
     uint8_t      page         = 0u;
     uint16_t     page_ticks   = 0u;          /* ticks on current page (0..39) */
     uint16_t     both_ticks   = 0u;          /* consecutive ticks with both buttons held */
+    uint16_t     setting_timeout_ticks = 0u; /* ticks for timeout in STATE_SETTING */
     uint8_t      disp_dirty   = 1u;          /* 1 = re-render needed */
     char         buf4[5]      = { 0 };       /* [4] unused, just for safety */
     uint8_t      dp           = HT1621_DP_NONE;
     uint16_t     curr3[3]     = { 0u, 0u, 0u };
 
     (void)argument;
+
+    /* PB3 = HT1621 LCD power enable. Must be driven HIGH before the
+     * HT1621 is initialised/powered on. */
+    {
+        GPIO_InitTypeDef GPIO_InitStructure;
+
+        RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOB, ENABLE);
+
+        GPIO_StructInit(&GPIO_InitStructure);
+        GPIO_InitStructure.GPIO_Pin   = GPIO_Pin_3;
+        GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;
+        GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_Out_PP;
+        GPIO_Init(GPIOB, &GPIO_InitStructure);
+
+        GPIO_SetBits(GPIOB, GPIO_Pin_3);
+    }
 
     ht1621_power_on();
     buttons_init();
@@ -900,6 +917,7 @@ void Thread_Display(void const *argument)
                 both_ticks = 0u;
                 candidate  = current_role ? current_role : 1u;
                 page_ticks = 0u;
+                setting_timeout_ticks = 0u; /* Reset 20s timeout counter on entry */
                 state      = STATE_SETTING;
                 disp_dirty = 1u;
                 /* Clear any accumulated single-press events before entering SETTING */
@@ -912,20 +930,24 @@ void Thread_Display(void const *argument)
          * SETTING state: role selection
          * ================================================================ */
         } else {
+            setting_timeout_ticks++;
 
             /* Single-press navigation — only when not in a dual-hold sequence */
             if (both_ticks == 0u) {
                 if (btn_just_pressed(BTN_UP)) {
                     candidate  = (candidate < 40u) ? (uint8_t)(candidate + 1u) : 1u;
                     disp_dirty = 1u;
+                    setting_timeout_ticks = 0u; /* Reset timeout upon keypress */
                     dbg_log("[SETTING] UP   -> candidate=%u\r\n", (unsigned)candidate);
                 }
                 if (btn_just_pressed(BTN_DOWN)) {
                     candidate  = (candidate > 1u) ? (uint8_t)(candidate - 1u) : 40u;
                     disp_dirty = 1u;
+                    setting_timeout_ticks = 0u; /* Reset timeout upon keypress */
                     dbg_log("[SETTING] DOWN -> candidate=%u\r\n", (unsigned)candidate);
                 }
             } else {
+                setting_timeout_ticks = 0u; /* Reset timeout while keys are held down */
                 /* Drain events during hold to prevent spurious presses after release */
                 (void)btn_just_pressed(BTN_UP);
                 (void)btn_just_pressed(BTN_DOWN);
@@ -956,6 +978,17 @@ void Thread_Display(void const *argument)
                 continue;                   /* skip render this tick */
             }
 
+            /* 20 seconds timeout exit (20s / 50ms = 400 ticks) */
+            if (setting_timeout_ticks >= 400u) {
+                dbg_log("[SETTING] timeout 20s reached, returning to STATE_NORMAL without saving\r\n");
+                state      = STATE_NORMAL;
+                page       = 0u;
+                page_ticks = 0u;
+                disp_dirty = 1u;
+                both_ticks = 0u;
+                continue;
+            }
+    
             /* Render candidate role */
             if (disp_dirty) {
                 format_role_str(candidate, buf4, &dp);
