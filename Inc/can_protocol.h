@@ -85,6 +85,7 @@ extern "C" {
 #define CAN_MSG_OUTLET_STATE        0x05    /* Node→Master: outlet states (multi-frame) */
 #define CAN_MSG_OUTLET_METRICS      0x06    /* Node→Master: per-outlet data (multi-frame) */
 #define CAN_MSG_CONFIG_WRITE        0x07    /* Master→Node: config write */
+#define CAN_MSG_CONFIG_ACK          0x08    /* Node→Master: config ack */
 #define CAN_MSG_CONNECT_ACK         0x09    /* Master→Node: 連線確認 */
 #define CAN_MSG_WHO_IS_ONLINE       0x0A    /* Master→Broadcast(node_id=0): 啟動發現廣播 */
 
@@ -130,6 +131,8 @@ extern "C" {
 #define CAN_SCALE_ENERGY        0.01f   /* uint32 × 0.01 = kWh */
 #define CAN_SCALE_FREQUENCY     0.01f   /* uint16 × 0.01 = Hz */
 #define CAN_SCALE_DELAY         100     /* uint16 × 100  = ms */
+#define CAN_SCALE_TEMPERATURE   0.1f    /* int16  × 0.1 = °C（有號，可負）*/
+#define CAN_SCALE_HUMIDITY      0.1f    /* uint16 × 0.1 = %RH */
 
 /** @brief Per-phase electrical metrics, fixed-point, 11 bytes packed */
 typedef struct {
@@ -145,8 +148,8 @@ typedef struct {
 /*============================================================================
  * POWER_METRICS Payload Layout (MSG_TYPE 0x04)
  *
- * Total data: freq(2) + type(1) + 4×metrics(44) = 47 bytes
- * Frames: ceil(47/7) = 7 frames
+ * Total data: freq(2) + type(1) + 4×metrics(44) + temp(2) + humi(2) + valid(1) = 52 bytes
+ * Frames: ceil(52/7) = 8 frames
  *
  * Byte order within the reassembled buffer:
  *   [0-1]   frequency   (uint16_t, ×0.01Hz)
@@ -155,16 +158,23 @@ typedef struct {
  *   [14-24] phase L1    (can_metrics_t)
  *   [25-35] phase L2    (can_metrics_t)
  *   [36-46] phase L3    (can_metrics_t)
+ *   [47-48] temperature (int16_t, ×0.1°C, signed)
+ *   [49-50] humidity    (uint16_t, ×0.1%RH)
+ *   [51]    env_valid   (uint8_t, bit0=temp valid, bit1=humi valid)
  *============================================================================*/
 
-#define CAN_POWER_DATA_SIZE     47      /* 2 + 1 + 4×11 */
-#define CAN_POWER_FRAME_COUNT   7       /* ceil(47/7) */
+#define CAN_POWER_DATA_SIZE     52      /* 2 + 1 + 4×11 + 2 + 2 + 1 */
+#define CAN_POWER_DATA_SIZE_V1  47      /* 舊韌體（無溫濕度）payload 大小 */
+#define CAN_POWER_FRAME_COUNT   8       /* ceil(52/7) */
 
 typedef struct {
     uint16_t      frequency;            /* ×0.01Hz */
     uint8_t       phase_type;           /* 0=single, 1=three-phase */
     can_metrics_t total;
     can_metrics_t phases[CAN_MAX_PHASES]; /* L1, L2, L3 */
+    int16_t       temperature;          /* ×0.1°C，有號 */
+    uint16_t      humidity;             /* ×0.1%RH */
+    uint8_t       env_valid;            /* bit0=temp 有效, bit1=humi 有效 */
 } __attribute__((packed)) can_power_payload_t;
 
 /*============================================================================
@@ -194,6 +204,10 @@ typedef struct {
 /** @brief Extract phase from 3-bit packed value */
 #define CAN_OUTLET_GET_PHASE(packed)   (((packed) >> 1) & 0x03)
 
+/** @brief env_valid bit flags in can_power_payload_t */
+#define CAN_ENV_VALID_TEMP      0x01
+#define CAN_ENV_VALID_HUMI      0x02
+
 /*============================================================================
  * OUTLET_METRICS Payload Layout (MSG_TYPE 0x06)
  *
@@ -210,23 +224,25 @@ typedef struct {
 
 #define CAN_BURST_TOTAL_FRAMES  \
     (CAN_POWER_FRAME_COUNT + CAN_OUTLET_STATE_FRAME_COUNT + CAN_OUTLET_METRICS_FRAME_COUNT)
-/* 7 + 3 + 76 = 86 response frames */
+/* 8 + 3 + 76 = 87 response frames */
 
 /*============================================================================
  * CONNECT_REQ Payload (MSG_TYPE 0x02) — Single frame
  *
  * MM32 上電後立即發送，並每 CAN_HEARTBEAT_INTERVAL_S 秒重複一次（心跳）。
- * Master 回覆 CONNECT_ACK。
- * MM32 未收到 ACK 則每 CAN_CONNECT_RETRY_S 秒重試，最多 3 次。
+ * 其區分無前者順序不重要：can-meter 充兩者都回覆 CONNECT_ACK。
+ * MM32 如 N 秒內未收到 ACK，每 CAN_CONNECT_RETRY_S 秒重試，最多 3 次。
  *============================================================================*/
 
 typedef struct {
-    uint8_t  firmware_version;  /* MM32 韌體版本 */
+    uint8_t  firmware_version;  /* MM32 韌體版本（診斷用）*/
     uint8_t  reserved[6];
 } __attribute__((packed)) can_connect_req_t;
 
 /*============================================================================
  * CONNECT_ACK Payload (MSG_TYPE 0x09) — Single frame
+ *
+ * can-meter 回覆 CONNECT_REQ，確認連線。
  *============================================================================*/
 
 typedef struct {
@@ -313,11 +329,11 @@ typedef enum {
  *============================================================================*/
 
 #define CAN_POLL_INTERVAL_S         10      /* ONLINE 節點輪詢週期（秒）*/
-#define CAN_POLL_TIMEOUT_MS         500     /* 等待節點完整 burst 的超時 */
+#define CAN_POLL_TIMEOUT_MS         500     /* 等待節點完整 burst 的超時（需 > burst 時間 ~342ms）*/
 #define CAN_REASSEMBLY_TIMEOUT_MS   500     /* 多幀重組超時 */
 #define CAN_POLL_MISS_OFFLINE       3       /* 連續幾次無回應後設為 OFFLINE，停止輪詢 */
 #define CAN_CONNECT_RETRY_S         30      /* MM32 韌體：收到 ACK 前每 30s 發送一次 CONNECT_REQ */
-#define CAN_HEARTBEAT_INTERVAL_S    300     /* MM32 韌體：定期心跳間隔（5 分鐘）*/
+#define CAN_HEARTBEAT_INTERVAL_S    300     /* MM32 韌體參考：定期心跳間隔（5 分鐘）*/
 #define CAN_WATCHDOG_TIMEOUT_S      10      /* MM32 WDT timeout */
 
 /*============================================================================
@@ -351,6 +367,16 @@ typedef enum {
 
 #define CAN_ENCODE_FREQUENCY(f) ((uint16_t)((f) / CAN_SCALE_FREQUENCY + 0.5f))
 #define CAN_DECODE_FREQUENCY(u) ((float)(u) * CAN_SCALE_FREQUENCY)
+
+/** @brief Float temperature (°C, signed) → int16 fixed-point */
+#define CAN_ENCODE_TEMPERATURE(f) \
+    ((int16_t)((f) >= 0 ? (f) / CAN_SCALE_TEMPERATURE + 0.5f \
+                        : (f) / CAN_SCALE_TEMPERATURE - 0.5f))
+/** @brief int16 fixed-point → float temperature (°C) */
+#define CAN_DECODE_TEMPERATURE(i) ((float)(int16_t)(i) * CAN_SCALE_TEMPERATURE)
+
+#define CAN_ENCODE_HUMIDITY(f)  ((uint16_t)((f) / CAN_SCALE_HUMIDITY + 0.5f))
+#define CAN_DECODE_HUMIDITY(u)  ((float)(u) * CAN_SCALE_HUMIDITY)
 
 #ifdef __cplusplus
 }
