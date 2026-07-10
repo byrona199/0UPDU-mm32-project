@@ -94,10 +94,12 @@ void IWDG_ResetTest(void)
     osDelay(500);
 
     //Configuration LSI32 frequency division, counter initial value is 0x7ff,
-    //reset time is about 1.6s.
+    //reset time is about 3.3s — 需大於 Thread_Health_OK() 最長門檻
+    //（HEALTH_MAX_STALE_UART_MS=5000ms 由「main() 停止餵狗那一刻」開始算，
+    //IWDG 本身的逾時是「距離上次餵狗多久沒被餵」，兩者疊加才是總偵測+重置時間）。
     // 1/(fLSI/Prescaler/reload)
-    // 1/(40000Hz/32/2047)=1.6376 s
-    Write_Iwdg_ON(IWDG_Prescaler_32, 0x7ff);
+    // 1/(40000Hz/64/2047)=3.2755 s
+    Write_Iwdg_ON(IWDG_Prescaler_64, 0x7ff);
 }
 
 /// @}

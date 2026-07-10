@@ -101,6 +101,69 @@ osMutexId data_mutex;
 osMutexDef(data_mutex);
 
 /*============================================================================
+ * Thread Liveness Heartbeats (for IWDG-driven crash recovery)
+ *
+ * 每個受監控執行緒只在完成一輪正常工作、沒有卡在鎖/等待時遞增自己的計數器。
+ * Thread_Health_OK() 由 main() 週期呼叫；只要有任一計數器超過允許的最大靜止
+ * 時間沒有前進，就回傳不健康，main() 停止餵狗，讓 IWDG 硬體逾時重置 MCU。
+ *============================================================================*/
+#define HEALTH_CHECK_INTERVAL_MS   300u
+#define HEALTH_MAX_STALE_CAN_MS    2000u   /* Thread_CAN_RX / Thread_CAN_Connect */
+#define HEALTH_MAX_STALE_UART_MS   5000u   /* Thread_UART_outlet_stat（含開機 2s 暖機 + 首次
+                                             * Modbus 交易最差約 2s ≈ 4s，僅約 1s 安全餘裕；
+                                             * 若調整 MB_MAX_RETRIES/MB_RESPONSE_TIMEOUT_MS/
+                                             * MB_BUS_QUIET_MAX_MS 或開機暖機時間，須重新檢查
+                                             * 此門檻是否仍足夠，避免開機誤觸發 watchdog 重置 */
+
+static volatile uint32_t g_hb_can_rx      = 0u;
+static volatile uint32_t g_hb_can_connect = 0u;
+static volatile uint32_t g_hb_uart        = 0u;
+
+/**
+ * @brief  由 main() idle loop 週期呼叫（間隔須為 HEALTH_CHECK_INTERVAL_MS）。
+ * @retval 1 = 三個執行緒都健康；0 = 至少一個已卡死超過門檻。
+ */
+int Thread_Health_OK(void)
+{
+    static uint32_t last_can_rx      = 0xFFFFFFFFu;
+    static uint32_t last_can_connect = 0xFFFFFFFFu;
+    static uint32_t last_uart        = 0xFFFFFFFFu;
+    static uint32_t stale_can_rx_ms      = 0u;
+    static uint32_t stale_can_connect_ms = 0u;
+    static uint32_t stale_uart_ms        = 0u;
+
+    uint32_t cur_can_rx      = g_hb_can_rx;
+    uint32_t cur_can_connect = g_hb_can_connect;
+    uint32_t cur_uart        = g_hb_uart;
+
+    if (cur_can_rx != last_can_rx) {
+        stale_can_rx_ms = 0u;
+        last_can_rx     = cur_can_rx;
+    } else {
+        stale_can_rx_ms += HEALTH_CHECK_INTERVAL_MS;
+    }
+
+    if (cur_can_connect != last_can_connect) {
+        stale_can_connect_ms = 0u;
+        last_can_connect     = cur_can_connect;
+    } else {
+        stale_can_connect_ms += HEALTH_CHECK_INTERVAL_MS;
+    }
+
+    if (cur_uart != last_uart) {
+        stale_uart_ms = 0u;
+        last_uart     = cur_uart;
+    } else {
+        stale_uart_ms += HEALTH_CHECK_INTERVAL_MS;
+    }
+
+    if (stale_can_rx_ms      > HEALTH_MAX_STALE_CAN_MS)  return 0;
+    if (stale_can_connect_ms > HEALTH_MAX_STALE_CAN_MS)  return 0;
+    if (stale_uart_ms        > HEALTH_MAX_STALE_UART_MS) return 0;
+    return 1;
+}
+
+/*============================================================================
  * Connection State (managed by Thread_CAN_Connect, flags set by Thread_CAN_RX)
  *============================================================================*/
 typedef enum {
@@ -432,6 +495,7 @@ void Thread_CAN_RX(void const *argument)
                     break;
             }
         }
+        g_hb_can_rx++;
         osDelay(1);  /* Yield to other threads */
     }
 }
@@ -467,6 +531,23 @@ void Thread_Metering(void const *argument)
 /*============================================================================
  * Process pending relay commands from the queue via Modbus
  *============================================================================*/
+
+/**
+ * @brief  osDelay() 分成 <=100ms 一格並同時遞增 g_hb_uart，避免 relay 指令
+ *         內建的延遲（例如錯開開機的 CAN_RELAY_CMD_ON delay）讓 UART 執行緒
+ *         心跳計數器長時間停滯，被 watchdog 誤判為卡死。
+ */
+static void relay_delay_with_heartbeat(uint32_t delay_ms)
+{
+    uint32_t waited_ms = 0u;
+    while (waited_ms < delay_ms) {
+        uint32_t chunk = (delay_ms - waited_ms > 100u) ? 100u : (delay_ms - waited_ms);
+        osDelay(chunk);
+        waited_ms += chunk;
+        g_hb_uart++;
+    }
+}
+
 static void process_relay_queue(void)
 {
     relay_queue_item_t item;
@@ -479,16 +560,18 @@ static void process_relay_queue(void)
                 if (item.outlet_id < MAX_OUTLET) {
                     meter_outlet_to_board(item.outlet_id, &map);
                     meter_set_relay(map.slave_id, map.channel, 0);
+                    g_hb_uart++;
                 }
                 break;
 
             case CAN_RELAY_CMD_ON:
                 if (item.outlet_id < MAX_OUTLET) {
                     if (item.delay > 0) {
-                        osDelay(item.delay * CAN_SCALE_DELAY);
+                        relay_delay_with_heartbeat((uint32_t)item.delay * CAN_SCALE_DELAY);
                     }
                     meter_outlet_to_board(item.outlet_id, &map);
                     meter_set_relay(map.slave_id, map.channel, 1);
+                    g_hb_uart++;
                 }
                 break;
 
@@ -496,12 +579,14 @@ static void process_relay_queue(void)
                 if (item.outlet_id < MAX_OUTLET) {
                     meter_outlet_to_board(item.outlet_id, &map);
                     meter_set_relay(map.slave_id, map.channel, 0);
+                    g_hb_uart++;
                     if (item.delay > 0) {
-                        osDelay(item.delay * CAN_SCALE_DELAY);
+                        relay_delay_with_heartbeat((uint32_t)item.delay * CAN_SCALE_DELAY);
                     } else {
-                        osDelay(1000);
+                        relay_delay_with_heartbeat(1000u);
                     }
                     meter_set_relay(map.slave_id, map.channel, 1);
+                    g_hb_uart++;
                 }
                 break;
 
@@ -509,6 +594,7 @@ static void process_relay_queue(void)
                 for (i = 0; i < MAX_OUTLET; i++) {
                     meter_outlet_to_board(i, &map);
                     meter_set_relay(map.slave_id, map.channel, 0);
+                    g_hb_uart++;
                 }
                 break;
 
@@ -516,6 +602,7 @@ static void process_relay_queue(void)
                 for (i = 0; i < MAX_OUTLET; i++) {
                     meter_outlet_to_board(i, &map);
                     meter_set_relay(map.slave_id, map.channel, 1);
+                    g_hb_uart++;
                 }
                 break;
 
@@ -565,6 +652,7 @@ void Thread_UART_outlet_stat(void const *argument)
         if (total_rc != MB_OK) {
             dbg_log("[MODBUS] Total meter offline\r\n");
         }
+        g_hb_uart++;  /* 每次 Modbus 交易嘗試（含離線）都算進度，避免全離線時卡在單一 cycle 計數器誤判 */
 
         /* ---- Poll each outlet board ---- */
         for (board = 0; board < METER_BOARD_COUNT; board++) {
@@ -574,6 +662,7 @@ void Thread_UART_outlet_stat(void const *argument)
             process_relay_queue();
 
             rc = meter_read_all(slave_id, &board_data);
+            g_hb_uart++;  /* 每次 Modbus 交易嘗試（含離線）都算進度 */
             if (rc != MB_OK) {
                 /* Board offline or error — skip this board */
                 dbg_log("[MODBUS] Board %u (slave %u) offline\r\n", board, slave_id);
@@ -639,8 +728,18 @@ void Thread_CAN_Connect(void const *argument)
 
     /* Stagger initial CONNECT_REQ by NODE_ID to prevent simultaneous
      * transmissions when multiple nodes power on at the same time.
-     * Node N waits N * 500ms before its first send (max 10s for node 20). */
-    osDelay((uint32_t)MY_NODE_ID * 500u);
+     * Node N waits N * 500ms before its first send (max 10s for node 20).
+     * 以 100ms tick 呼叫 g_hb_can_connect++，避免此延遲期間心跳計數器停滯，
+     * 造成 watchdog 誤判此執行緒卡死（尤其 node_id 較大時延遲較長）。 */
+    {
+        uint32_t stagger_ms = (uint32_t)MY_NODE_ID * 500u;
+        uint32_t waited_ms  = 0u;
+        while (waited_ms < stagger_ms) {
+            osDelay(100);
+            waited_ms += 100;
+            g_hb_can_connect++;
+        }
+    }
 
     /* 啟動後立即發送 */
     send_connect_req();
@@ -656,6 +755,7 @@ void Thread_CAN_Connect(void const *argument)
         while (elapsed_ms < interval_ms) {
             osDelay(100);
             elapsed_ms += 100;
+            g_hb_can_connect++;
 
             /* CONNECT_ACK 收到：切換心跳模式，重置計時 */
             if (g_ack_received_flag) {
@@ -672,12 +772,20 @@ void Thread_CAN_Connect(void const *argument)
             }
 
             /* WHO_IS_ONLINE 收到：不論狀態立即發送，但仍加 NODE_ID jitter
-             * 避免多節點同時搶 CAN bus。 */
+             * 避免多節點同時搶 CAN bus。以 100ms 分格 tick g_hb_can_connect，
+             * 與 stagger 延遲同樣做法，避免 jitter 期間心跳計數器停滯。 */
             if (g_who_is_online_flag) {
+                uint32_t jitter_ms    = (uint32_t)MY_NODE_ID * 50u;
+                uint32_t jittered_ms  = 0u;
                 g_who_is_online_flag = 0;
                 dbg_log("[CONNECT] WHO_IS_ONLINE: sending CONNECT_REQ (jitter %ums)\r\n",
-                        (unsigned)(MY_NODE_ID * 50u));
-                osDelay((uint32_t)MY_NODE_ID * 50u);  /* 50ms per node ID */
+                        (unsigned)jitter_ms);
+                while (jittered_ms < jitter_ms) {
+                    uint32_t chunk = (jitter_ms - jittered_ms > 100u) ? 100u : (jitter_ms - jittered_ms);
+                    osDelay(chunk);
+                    jittered_ms += chunk;
+                    g_hb_can_connect++;
+                }
                 break;
             }
         }

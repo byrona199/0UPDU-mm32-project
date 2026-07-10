@@ -14,6 +14,7 @@
 #include  <stdio.h>
 
 extern int Init_Thread (void);
+extern int Thread_Health_OK(void);
 
 /*
  * main: initialize and start the system
@@ -44,18 +45,26 @@ int main (void) {
         }
     }
 
-    // IWDG: temporarily disabled while debugging boot path
-    //IWDG_ResetTest();
-
     // create 'thread' functions that start executing,
     Init_Thread ();
 
     // start thread execution
     osKernelStart();
 
+    // IWDG: 啟用硬體 watchdog；移到 osKernelStart() 之後才呼叫，因為
+    // IWDG_ResetTest() 內部會呼叫 osDelay()，必須在 RTOS 排程器啟動、
+    // main() 已經是以執行緒身分繼續執行的情況下才能安全使用。
+    // 餵狗邏輯見下方 while(1) idle loop，綁定 Thread_Health_OK()，只有
+    // CAN_RX/CAN_Connect/UART 三個關鍵執行緒都存活才餵狗，避免「idle loop
+    // 自己沒卡住就一直餵」的假保護。
+    IWDG_ResetTest();
+
     while (1) {
-        osDelay(1000);
-        //Write_Iwdg_RL();   /* IWDG disabled */
+        osDelay(300);   /* 需 <= Thread.c 的 HEALTH_CHECK_INTERVAL_MS(300ms) */
+        if (Thread_Health_OK()) {
+            Write_Iwdg_RL();
+        }
+        /* 不健康：不餵狗，讓 IWDG 於 ~3.3s 後自動重置 MCU */
     }
 }
 
