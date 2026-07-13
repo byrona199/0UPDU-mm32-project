@@ -710,6 +710,65 @@ void Thread_UART_outlet_stat(void const *argument)
 }
 
 /*============================================================================
+ * Bus-Off 偵測與自動復原（由 Thread_CAN_Connect 的 100ms tick 呼叫）
+ *
+ * 2026-07-13 實測：CAN 控制器被錯誤風暴打進 bus-off 後韌體無復原邏輯，
+ * 執行緒全部存活（watchdog 盲區），只能斷電。此處輪詢 SR 的 BS bit：
+ *   BS 置起 → 取 can_mutex 做 ResetMode toggle（清錯誤計數器，控制器依
+ *   協定等 128×11 recessive bits（250kbps 約 5.6ms）後自動重新加入）。
+ *   軟復原之間退避 5s；連續 5 次後 BS 仍置起 → NVIC_SystemReset() 保底。
+ *   復原成功（BS 讀到清除）→ 強制 CONN_DISCONNECTED + who_is_online_flag，
+ *   复用既有 jitter 重連路徑，數秒內重新被主機發現。
+ *============================================================================*/
+#define BUSOFF_BACKOFF_TICKS      50u  /* 5s @ 100ms tick */
+#define BUSOFF_SOFT_RECOVER_MAX    5u  /* 連續軟復原失敗上限，超過即整顆重開 */
+
+static void busoff_check_tick(void)
+{
+    static uint32_t backoff_ticks    = 0u;
+    static uint8_t  soft_fail_count  = 0u;
+    static uint8_t  recovery_pending = 0u;
+
+    if (backoff_ticks > 0u) {
+        backoff_ticks--;
+    }
+
+    if (CAN_GetFlagStatus(CAN1, CAN_STATUS_BS) == RESET) {
+        /* bus 正常。若剛做過軟復原，視為成功：歸零計數並重新宣告連線 */
+        if (recovery_pending) {
+            recovery_pending = 0u;
+            soft_fail_count  = 0u;
+            g_conn_state         = CONN_DISCONNECTED;
+            g_who_is_online_flag = 1;
+            dbg_log("[BUSOFF] recovered, re-announcing\r\n");
+        }
+        return;
+    }
+
+    /* BS 置起（bus-off）。退避期間不重複嘗試 */
+    if (backoff_ticks > 0u) {
+        return;
+    }
+
+    if (soft_fail_count >= BUSOFF_SOFT_RECOVER_MAX) {
+        /* 軟復原連續失敗，升級整顆重開（走既有開機公告流程） */
+        NVIC_SystemReset();
+    }
+
+    dbg_log("[BUSOFF] detected, soft recovery attempt %u\r\n",
+            (unsigned)(soft_fail_count + 1u));
+
+    osMutexWait(can_mutex, osWaitForever);
+    CAN_ResetMode_Cmd(CAN1, ENABLE);
+    CAN_ResetMode_Cmd(CAN1, DISABLE);
+    osMutexRelease(can_mutex);
+
+    soft_fail_count++;
+    recovery_pending = 1u;
+    backoff_ticks    = BUSOFF_BACKOFF_TICKS;
+}
+
+/*============================================================================
  * Thread_CAN_Connect: 管理 CONNECT_REQ 發送時機
  *
  * 未連線狀態：啟動後立即發送，此後每 30s 發送一次直到收到 ACK。
@@ -756,6 +815,7 @@ void Thread_CAN_Connect(void const *argument)
             osDelay(100);
             elapsed_ms += 100;
             g_hb_can_connect++;
+            busoff_check_tick();
 
             /* CONNECT_ACK 收到：切換心跳模式，重置計時 */
             if (g_ack_received_flag) {
