@@ -45,6 +45,28 @@ int main (void) {
         }
     }
 
+    // CAN termination resistor (PA15, active high): only the End node of
+    // each bus (role 20 = End1, role 40 = End2, both map to node_id 20)
+    // mounts the 120-ohm terminator. All other roles (incl. unconfigured
+    // role 0 -> g_my_node_id 0) must keep it disengaged.
+    {
+        GPIO_InitTypeDef GPIO_InitStructure;
+
+        RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOA, ENABLE);
+
+        GPIO_StructInit(&GPIO_InitStructure);
+        GPIO_InitStructure.GPIO_Pin   = GPIO_Pin_15;
+        GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;
+        GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_Out_PP;
+        GPIO_Init(GPIOA, &GPIO_InitStructure);
+
+        if (g_my_node_id == 20u) {
+            GPIO_SetBits(GPIOA, GPIO_Pin_15);
+        } else {
+            GPIO_ResetBits(GPIOA, GPIO_Pin_15);
+        }
+    }
+
     // create 'thread' functions that start executing,
     Init_Thread ();
 
