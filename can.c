@@ -162,6 +162,13 @@ void Send_CANFrame(CanTxMsg *TxMessage)
     u32 ID = 0;
     u32 i;
 
+    /* 復位模式（RM=1，bus-off 時硬體自動置位）期間絕不可寫 TX 緩衝器：
+     * 0x40-0x5C 此時對映驗收濾波器 ACR/AMR（UM 表 73），寫入即摧毀濾波器
+     * 導致 RX 永久拒收（實測殭屍態根因）。此時 TX 本來也必然無效，直接丟棄。 */
+    if (CAN1->CR & CAN_ResetMode) {
+        return;
+    }
+
     if (TxMessage->CANIDtype) {
         /* Extended frame */
         ID = TxMessage->CANID << 3;

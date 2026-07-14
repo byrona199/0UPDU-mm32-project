@@ -714,8 +714,8 @@ void Thread_UART_outlet_stat(void const *argument)
  *
  * 2026-07-13 實測：CAN 控制器被錯誤風暴打進 bus-off 後韌體無復原邏輯，
  * 執行緒全部存活（watchdog 盲區），只能斷電。此處輪詢 SR 的 BS bit：
- *   BS 置起 → 取 can_mutex 做 ResetMode toggle（清錯誤計數器，控制器依
- *   協定等 128×11 recessive bits（250kbps 約 5.6ms）後自動重新加入）。
+ *   BS 置起 → 取 can_mutex 重跑 CAN_NVIC_Init（重建全部組態含驗收濾波器，
+ *   結尾清 RM 觸發 128×11 recessive bits 復原）。
  *   軟復原之間退避 5s；連續 5 次後 BS 仍置起 → NVIC_SystemReset() 保底。
  *   復原成功（BS 讀到清除）→ 強制 CONN_DISCONNECTED + who_is_online_flag，
  *   复用既有 jitter 重連路徑，數秒內重新被主機發現。
@@ -759,8 +759,13 @@ static void busoff_check_tick(void)
             (unsigned)(soft_fail_count + 1u));
 
     osMutexWait(can_mutex, osWaitForever);
-    CAN_ResetMode_Cmd(CAN1, ENABLE);
-    CAN_ResetMode_Cmd(CAN1, DISABLE);
+    /* 完整重跑 CAN 初始化而非裸 ResetMode toggle：bus-off 瞬間硬體自動
+     * 置 RM=1（UM 25.5.2），而 0x40-0x5C 在復位模式下對映 ACR/AMR
+     * （UM 表 73）——RM=1 窗口內任何 TX 緩衝器寫入都會摧毀驗收濾波器
+     * （2026-07-14 實測：node1/node20 風暴後 TX 活 RX 死、僅斷電可救）。
+     * CAN_NVIC_Init 會重寫 CDR/BTR/ACR/AMR/IER，其結尾清 RM 的動作即
+     * 觸發協定規定的 128×11 recessive bits bus-off 復原序列。 */
+    CAN_NVIC_Init();
     osMutexRelease(can_mutex);
 
     soft_fail_count++;
