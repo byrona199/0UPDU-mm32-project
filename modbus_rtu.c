@@ -104,13 +104,30 @@ static void mb_rx_flush(void)
  * Internal: UART2 TX (polling mode) with DE control
  *============================================================================*/
 
+/**
+ * @brief Busy-wait delay (~1 us per iteration @ 72 MHz).
+ * @param us Microseconds to wait.
+ */
+static void mb_delay_us(uint32_t us)
+{
+    volatile uint32_t n;
+    while (us--) {
+        for (n = 18u; n > 0u; n--) { }
+    }
+}
+
 static void mb_send_frame(const uint8_t *data, uint16_t len)
 {
     uint16_t i;
 
     MB_DE_HIGH();  /* Enable TX on RS-485 */
 
-    /* Small delay for DE setup time (~10us at 9600 baud is negligible) */
+    /* DE setup time: previously there was no real delay here (just the
+     * comment claimed ~10us "negligible"), so the transceiver driver was
+     * enabled and UART TX started back-to-back with only instruction
+     * overhead (well under 1us) in between. Widen this to ~500us so slow
+     * RS-485 transceivers have time to fully turn on before the start bit. */
+    mb_delay_us(MB_DE_SETUP_US);
 
     for (i = 0; i < len; i++) {
         UART_SendData(UART2, data[i]);
