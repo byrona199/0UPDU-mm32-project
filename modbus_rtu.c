@@ -105,14 +105,24 @@ static void mb_rx_flush(void)
  *============================================================================*/
 
 /**
- * @brief Busy-wait delay (~1 us per iteration @ 72 MHz).
+ * @brief Busy-wait delay, ~1 us per iteration @ 72 MHz.
+ *
+ * NOTE: scope-verified against this project's build settings (Optim=1).
+ * The original constant (borrowed from ht1621.c, 18 loops/us) assumed
+ * ~4 CPU cycles per loop pass, but `n` is volatile so each pass does a
+ * real load/decrement/store/compare/branch against RAM -- plus flash
+ * wait-state cycles on every fetch at 72 MHz -- which measured out to
+ * ~4x longer than assumed (500us requested -> 2ms on the scope). ht1621's
+ * use of the same constant never exposed this because its ≥400ns spec is
+ * met even at 4x the intended delay. Re-verify with a scope if the
+ * optimization level, toolchain, or clock config changes.
  * @param us Microseconds to wait.
  */
 static void mb_delay_us(uint32_t us)
 {
     volatile uint32_t n;
     while (us--) {
-        for (n = 18u; n > 0u; n--) { }
+        for (n = 5u; n > 0u; n--) { }
     }
 }
 
@@ -136,6 +146,13 @@ static void mb_send_frame(const uint8_t *data, uint16_t len)
 
     /* Wait for last byte to fully shift out */
     while (!UART_GetFlagStatus(UART2, UART_CSR_TXC));
+
+    /* Small guard time before releasing DE: TXC only confirms the shift
+     * register is empty, with almost no margin before we used to drop DE
+     * right after it. Hold the driver on a little longer so the
+     * transceiver fully finishes driving the last stop bit before the
+     * bus is released to RX. */
+    mb_delay_us(MB_DE_HOLD_US);
 
     MB_DE_LOW();   /* Switch to RX mode */
 }
