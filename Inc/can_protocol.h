@@ -256,6 +256,19 @@ typedef struct {
 #define CAN_BOARD_STATUS_DATA_SIZE    (CAN_MAX_METER_BOARDS * CAN_BOARD_STATUS_SIZE)  /* 36 */
 #define CAN_BOARD_STATUS_FRAME_COUNT  6     /* ceil(36/7) */
 
+/* ⚠ 部署順序警告（review finding I4）：
+ * 新版 can-meter 上線後，其回報閘門會變成
+ * (data_valid & 0x0F) == 0x0F ——需要四個資料群組全部到齊，
+ * 而非現行三個。
+ * 仍在跑「舊」韌體（不含本 BOARD_STATUS 訊息）的節點永遠不會
+ * 送出 BOARD_STATUS，因此該閘門永遠不會通過。
+ * 後果：該節點的 power / outlets / environment / boards
+ * 會全部停止回報，但仍顯示為 ONLINE（逾時後落入
+ * 「partial response」路徑）。
+ * 症狀是「線上但數字永遠不變」，且不會有任何錯誤訊息。
+ * 必要動作：部署新版 can-meter 之前，務必先確認**每一個**
+ * ONLINE 節點都已更新為支援 BOARD_STATUS 的韌體。 */
+
 /* 離線時的不變式：online == 0 時 frequency 是**最後一次成功讀取的陳舊值**，
  * 不是 0，也不代表當下。消費端一律先看 online，不得據 frequency 判定。
  * 刻意不清零——清零會讓該板 4 埠的既有告警看起來像「已恢復」。
@@ -377,11 +390,20 @@ typedef enum {
 
 #define CAN_POLL_INTERVAL_S         10      /* ONLINE 節點輪詢週期（秒）*/
 #define CAN_POLL_TIMEOUT_MS         700     /* 等待節點完整 burst 的超時。
-                                             * 93 幀 × 最差 5ms（can.c 每幀 osDelay(4)，
-                                             * 1ms tick 對齊後最差 5ms）+ 線上 TX ~48ms
-                                             * ≈ 513ms，故需 > 513ms。
+                                             * 實機量測（2026-09-07，node 20）：完整
+                                             * 93 幀 burst（POWER 首幀 → BOARD_STATUS
+                                             * 末幀）耗時 367.5ms，逐幀間隔穩定為
+                                             * 4.00ms。原估計以最差 5ms/幀計（can.c
+                                             * 每幀 osDelay(4)，保留 1ms tick 對齊誤差
+                                             * 的餘裕），但實測不存在此對齊損耗，
+                                             * 故實際遠優於估計。
+                                             * 相對 700ms 超時尚有 47% 餘裕；以實測的
+                                             * 4.0ms/幀反推，700ms 視窗可容納約 170
+                                             * 幀（非原估的 128 幀），目前 burst 僅
+                                             * 93 幀。
                                              * 另一個上限是 MM32 的 IWDG 心跳門檻
-                                             * HEALTH_MAX_STALE_CAN_MS(2000ms)。 */
+                                             * HEALTH_MAX_STALE_CAN_MS(2000ms)，
+                                             * 實測餘裕為 5.4 倍。 */
 #define CAN_REASSEMBLY_TIMEOUT_MS   700     /* 多幀重組超時（文件常數，實作未引用）*/
 #define CAN_POLL_MISS_OFFLINE       3       /* 連續幾次無回應後設為 OFFLINE，停止輪詢 */
 #define CAN_CONNECT_RETRY_S         30      /* MM32 韌體：收到 ACK 前每 30s 發送一次 CONNECT_REQ */
