@@ -88,6 +88,7 @@ extern "C" {
 #define CAN_MSG_CONFIG_ACK          0x08    /* Node→Master: config ack */
 #define CAN_MSG_CONNECT_ACK         0x09    /* Master→Node: 連線確認 */
 #define CAN_MSG_WHO_IS_ONLINE       0x0A    /* Master→Broadcast(node_id=0): 啟動發現廣播 */
+#define CAN_MSG_BOARD_STATUS        0x0B    /* Node→Master: 板級狀態（multi-frame）*/
 
 /*============================================================================
  * Transport Header (Byte 0 of every CAN frame)
@@ -219,12 +220,54 @@ typedef struct {
 #define CAN_OUTLET_METRICS_FRAME_COUNT  76  /* ceil(528/7) */
 
 /*============================================================================
+ * BOARD_STATUS Payload Layout (MSG_TYPE 0x0B)
+ *
+ * 12 boards × 3 bytes = 36 bytes
+ * Frames: ceil(36/7) = 6 frames
+ *
+ * 頻率在硬體上是板級的量：1084 每板只有一個頻率暫存器（0x0009），
+ * 48 埠 = 12 板 × 4 通道。因此走獨立訊息，而不是塞進逐埠的 OUTLET_METRICS
+ * ——後者會讓一個 payload 混兩種粒度，且日後加板級欄位就得再動它的長度判定。
+ *
+ * Byte order within one board entry:
+ *   [0-1]  frequency  (uint16_t, ×0.01Hz)
+ *   [2]    status     (uint8_t)
+ *
+ * 陣列順序即板編號：index b 對應 board_idx = b（0-based），其 Modbus slave id
+ * 為 b + METER_SLAVE_ID_BASE(2)。對外 1-based 的 board_id 由 can-meter 的
+ * report_boards() 做 +1，韌體端不做任何 ±1。
+ *============================================================================*/
+
+#define CAN_MAX_METER_BOARDS    12   /* 1084 電表板數；48 埠 = 12 板 × 4 通道 */
+
+/** @brief 單一 1084 電表板的板級狀態，3 bytes packed */
+typedef struct {
+    uint16_t frequency;   /* ×0.01Hz，該板量測的電網頻率（1084 暫存器 0x0009）*/
+    uint8_t  status;      /* bit0   = online（1 = 本輪 Modbus 讀取成功）
+                           * bit1-7 = reserved，必須為 0 */
+} __attribute__((packed)) can_board_status_t;
+
+#define CAN_BOARD_ONLINE              ((uint8_t)0x01u)
+/* ⚠ model_types.h 日後會有同值的 BOARD_STATUS_ONLINE（host spec §1.2）——兩份定義
+ *   服務不同的 consumer 集合（本檔只有 can-meter，model_types.h 有全部九個）。
+ *   值錯開時 pdu-core 會把所有板判成離線且無任何錯誤訊息。 */
+
+#define CAN_BOARD_STATUS_SIZE         3     /* sizeof(can_board_status_t) */
+#define CAN_BOARD_STATUS_DATA_SIZE    (CAN_MAX_METER_BOARDS * CAN_BOARD_STATUS_SIZE)  /* 36 */
+#define CAN_BOARD_STATUS_FRAME_COUNT  6     /* ceil(36/7) */
+
+/* 離線時的不變式：online == 0 時 frequency 是**最後一次成功讀取的陳舊值**，
+ * 不是 0，也不代表當下。消費端一律先看 online，不得據 frequency 判定。
+ * 刻意不清零——清零會讓該板 4 埠的既有告警看起來像「已恢復」。 */
+
+/*============================================================================
  * Total frames for a full burst response to POLL_REQ(ALL)
  *============================================================================*/
 
 #define CAN_BURST_TOTAL_FRAMES  \
-    (CAN_POWER_FRAME_COUNT + CAN_OUTLET_STATE_FRAME_COUNT + CAN_OUTLET_METRICS_FRAME_COUNT)
-/* 8 + 3 + 76 = 87 response frames */
+    (CAN_POWER_FRAME_COUNT + CAN_OUTLET_STATE_FRAME_COUNT + \
+     CAN_OUTLET_METRICS_FRAME_COUNT + CAN_BOARD_STATUS_FRAME_COUNT)
+/* 8 + 3 + 76 + 6 = 93 response frames */
 
 /*============================================================================
  * CONNECT_REQ Payload (MSG_TYPE 0x02) — Single frame
@@ -329,8 +372,13 @@ typedef enum {
  *============================================================================*/
 
 #define CAN_POLL_INTERVAL_S         10      /* ONLINE 節點輪詢週期（秒）*/
-#define CAN_POLL_TIMEOUT_MS         500     /* 等待節點完整 burst 的超時（需 > burst 時間 ~342ms）*/
-#define CAN_REASSEMBLY_TIMEOUT_MS   500     /* 多幀重組超時 */
+#define CAN_POLL_TIMEOUT_MS         700     /* 等待節點完整 burst 的超時。
+                                             * 93 幀 × 最差 5ms（can.c 每幀 osDelay(4)，
+                                             * 1ms tick 對齊後最差 5ms）+ 線上 TX ~48ms
+                                             * ≈ 513ms，故需 > 513ms。
+                                             * 另一個上限是 MM32 的 IWDG 心跳門檻
+                                             * HEALTH_MAX_STALE_CAN_MS(2000ms)。 */
+#define CAN_REASSEMBLY_TIMEOUT_MS   700     /* 多幀重組超時（文件常數，實作未引用）*/
 #define CAN_POLL_MISS_OFFLINE       3       /* 連續幾次無回應後設為 OFFLINE，停止輪詢 */
 #define CAN_CONNECT_RETRY_S         30      /* MM32 韌體：收到 ACK 前每 30s 發送一次 CONNECT_REQ */
 #define CAN_HEARTBEAT_INTERVAL_S    300     /* MM32 韌體參考：定期心跳間隔（5 分鐘）*/
@@ -343,6 +391,7 @@ typedef enum {
 #define CAN_REASSEMBLY_POWER_SIZE   64      /* > 47 bytes */
 #define CAN_REASSEMBLY_STATE_SIZE   32      /* > 18 bytes */
 #define CAN_REASSEMBLY_METRICS_SIZE 544     /* > 528 bytes */
+#define CAN_REASSEMBLY_BOARD_SIZE   48      /* > 36 bytes */
 
 /*============================================================================
  * Helper: Convert between float and fixed-point
