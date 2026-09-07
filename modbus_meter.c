@@ -62,6 +62,29 @@ void meter_channel_to_can(const meter_channel_t *ch, can_metrics_t *out)
 }
 
 /*============================================================================
+ * meter_board_status_update — 板級狀態（BOARD_STATUS 用）
+ *
+ * frequency: 1084 暫存器 0x0009 ×0.01Hz → CAN ×0.01Hz（同刻度，直接搬值）
+ *============================================================================*/
+
+void meter_board_status_update(can_board_status_t *bs,
+                               const meter_board_t *board,
+                               int rc)
+{
+    if (rc == MB_OK) {
+        /* 不用 CAN_ENCODE_FREQUENCY（吃 float，Cortex-M0 無 FPU）。
+         * 用直接指派而非 |=：status 只有 bit0 有定義，其餘 reserved 必須為 0，
+         * 指派同時滿足「立 online」與「清 reserved」兩件事。 */
+        bs->frequency = board->frequency;
+        bs->status    = CAN_BOARD_ONLINE;
+    } else {
+        /* 只清 online。frequency 刻意保留：離線 = 失去觀測能力，
+         * 不是「量到 0 Hz」，也不是「已恢復」。 */
+        bs->status &= (uint8_t)~CAN_BOARD_ONLINE;
+    }
+}
+
+/*============================================================================
  * Parse FC04 register array into meter_board_t
  *
  * regs[0..37] correspond to register addresses 0x0000..0x0025

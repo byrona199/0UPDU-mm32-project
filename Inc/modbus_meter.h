@@ -262,6 +262,23 @@ void meter_outlet_to_board(uint8_t outlet_id, meter_outlet_map_t *out);
 void meter_channel_to_can(const meter_channel_t *ch, can_metrics_t *out);
 
 /**
+ * @brief 由一次 meter_read_all() 的結果更新該板的 CAN 板級狀態
+ *
+ * 成功：frequency 由 1084 暫存器 0x0009 直接搬值（同為 ×0.01Hz，零算術），
+ *       status 設為 CAN_BOARD_ONLINE（reserved bits 一併清零）。
+ * 失敗：**只清 online bit，frequency 保留最後已知值**。
+ *       清零會讓該板 4 埠的既有告警在 host 端看起來像「已恢復」——
+ *       離線是「失去觀測能力」而非「確知正常」。
+ *
+ * @param bs     輸出，3 B packed；呼叫端需跨輪保留（不可每輪重新歸零）
+ * @param board  本輪讀到的板資料；rc != MB_OK 時其內容不被使用
+ * @param rc     meter_read_all() 的回傳值
+ */
+void meter_board_status_update(can_board_status_t *bs,
+                               const meter_board_t *board,
+                               int rc);
+
+/**
  * @brief Read total power meter (FC03, 34 regs, slave ID 1).
  * @param out  Parsed total meter data
  * @return MB_OK on success, negative on failure
