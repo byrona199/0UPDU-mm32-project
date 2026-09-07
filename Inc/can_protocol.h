@@ -258,7 +258,11 @@ typedef struct {
 
 /* 離線時的不變式：online == 0 時 frequency 是**最後一次成功讀取的陳舊值**，
  * 不是 0，也不代表當下。消費端一律先看 online，不得據 frequency 判定。
- * 刻意不清零——清零會讓該板 4 埠的既有告警看起來像「已恢復」。 */
+ * 刻意不清零——清零會讓該板 4 埠的既有告警看起來像「已恢復」。
+ *
+ * ⚠ 此規則只適用於 can_board_status_t.frequency。can_power_payload_t.frequency
+ *   沒有對應的 online 位元：總電表離線時 Thread.c 會把它清成 0，
+ *   兩個同名為 frequency 的欄位在來源消失時行為相反，不可互相套用。 */
 
 /*============================================================================
  * Total frames for a full burst response to POLL_REQ(ALL)

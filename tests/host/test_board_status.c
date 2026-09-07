@@ -12,6 +12,10 @@
 #include "can_protocol.h"
 #include "modbus_meter.h"
 
+#ifdef NDEBUG
+#error "This test verifies via assert(); it must not be compiled with NDEBUG."
+#endif
+
 /* modbus_meter.c 會參照 RTU 層；本測試的路徑不會呼叫到，給樁即可連結。 */
 int modbus_read_regs(uint8_t slave_id, uint8_t fc, uint16_t start_reg,
                      uint16_t num_regs, uint16_t *out_regs)
@@ -28,6 +32,9 @@ int modbus_write_single_reg(uint8_t slave_id, uint16_t reg_addr, uint16_t value)
 
 int main(void)
 {
+    can_board_status_t bs;
+    meter_board_t      board;
+
     /* --- 案例 1：線上佈局（與 pdu-model 的 test_can_protocol.c 同一組契約）--- */
     assert(sizeof(can_board_status_t) == 3);
     assert(CAN_BOARD_STATUS_DATA_SIZE == 36);
@@ -38,9 +45,6 @@ int main(void)
     /* --- 案例 2：板數一致。board_idx = outlet_idx / 4 的換算完全依賴這條 --- */
     assert(CAN_MAX_METER_BOARDS * METER_CHANNELS_PER_BOARD == CAN_MAX_OUTLETS);
     assert(CAN_MAX_METER_BOARDS == METER_BOARD_COUNT);
-
-    can_board_status_t bs;
-    meter_board_t      board;
 
     memset(&board, 0, sizeof(board));
 

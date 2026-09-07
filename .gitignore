@@ -14,6 +14,17 @@ Listings/
 # VSCode
 .vscode/
 
-# Tests (generated binaries only; .c/.h source files are tracked)
-tests/host/test_board_status
-tests/host/test_env_source
+# Tests: tests/host/ 底下只追蹤手寫的測試原始碼，編譯產生的執行檔一律不追蹤。
+# 執行檔與其原始碼同名而沒有副檔名（test_board_status ← test_board_status.c），
+# 無法用單純的副檔名規則排除，故先排除 test_* 再把原始碼加回來。
+tests/host/test_*
+!tests/host/test_*.c
+!tests/host/test_*.h
+!tests/host/test_*.sh
+
+# 參考文件／資料手冊等二進位附件不進版控
+*.pdf
+*.PDF
+*.docx
+*.xlsx
+*.png

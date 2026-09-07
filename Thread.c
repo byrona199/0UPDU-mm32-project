@@ -481,7 +481,8 @@ void Thread_CAN_RX(void const *argument)
                     prepare_burst_snapshot();
                     /* Hold can_mutex across the full burst so no other thread
                      * (e.g. Thread_CAN_Connect) can insert a frame between
-                     * POWER_METRICS, OUTLET_STATE, and OUTLET_METRICS. */
+                     * POWER_METRICS, OUTLET_STATE, OUTLET_METRICS, and
+                     * BOARD_STATUS. */
                     dbg_log("[CAN_RX] POLL_REQ -> sending burst\r\n");
                     osMutexWait(can_mutex, osWaitForever);
                     CAN_SendMultiFrame(CAN_MSG_POWER_METRICS,
