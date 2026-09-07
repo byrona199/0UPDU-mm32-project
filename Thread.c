@@ -205,6 +205,11 @@ static uint8_t outlet_state[MAX_OUTLET];
 /** @brief Outlet phase mapping: 0=L1, 1=L2, 2=L3 */
 static uint8_t outlet_phase[MAX_OUTLET];
 
+/** @brief Per-board status（12 板，含頻率與 online bit）
+ *  跨輪保留：離線時 meter_board_status_update() 只清 online、保留 frequency，
+ *  所以這個陣列不可在每輪迴圈開頭歸零。開機初值全 0 = 離線且無資料，正確。 */
+static can_board_status_t board_status[METER_BOARD_COUNT];
+
 /*============================================================================
  * Relay Command Queue
  *
@@ -329,6 +334,15 @@ int Init_Thread(void)
 static can_power_payload_t  can_power_payload_burst;
 static uint8_t              outlet_state_burst[CAN_OUTLET_STATE_DATA_SIZE];
 static uint8_t              outlet_metrics_burst[CAN_OUTLET_METRICS_DATA_SIZE];
+static can_board_status_t   board_status_burst[CAN_MAX_METER_BOARDS];
+
+/* 共享陣列與 burst 緩衝區必須同尺寸：prepare_burst_snapshot() 的 memcpy 以
+ * sizeof 取長度，兩者錯開就是靜默截斷末端的板。
+ * Keil armcc 為 C89，用負長度陣列做編譯期斷言。 */
+typedef char board_status_size_check_t
+    [(sizeof(board_status) == CAN_BOARD_STATUS_DATA_SIZE) ? 1 : -1];
+typedef char board_count_check_t
+    [(METER_BOARD_COUNT == CAN_MAX_METER_BOARDS) ? 1 : -1];
 
 static void prepare_burst_snapshot(void)
 {
@@ -363,6 +377,9 @@ static void prepare_burst_snapshot(void)
 
     /* Outlet metrics */
     memcpy(outlet_metrics_burst, outlet_metrics, sizeof(outlet_metrics_burst));
+
+    /* Board status */
+    memcpy(board_status_burst, board_status, sizeof(board_status_burst));
 
     osMutexRelease(data_mutex);
 }
@@ -476,8 +493,11 @@ void Thread_CAN_RX(void const *argument)
                     CAN_SendMultiFrame(CAN_MSG_OUTLET_METRICS,
                                       outlet_metrics_burst,
                                       sizeof(outlet_metrics_burst));
+                    CAN_SendMultiFrame(CAN_MSG_BOARD_STATUS,
+                                      (const uint8_t *)board_status_burst,
+                                      sizeof(board_status_burst));
                     osMutexRelease(can_mutex);
-                    dbg_log("[CAN_RX] burst sent (power+state+metrics)\r\n");
+                    dbg_log("[CAN_RX] burst sent (power+state+metrics+boards)\r\n");
                     break;
 
                 case CAN_MSG_RELAY_CMD:
@@ -663,8 +683,15 @@ void Thread_UART_outlet_stat(void const *argument)
 
             rc = meter_read_all(slave_id, &board_data);
             g_hb_uart++;  /* 每次 Modbus 交易嘗試（含離線）都算進度 */
+
+            /* 板級狀態無條件更新（含失敗）：離線本身就是要回報給 host 的事實。
+             * 失敗時只清 online bit、保留 frequency，見 meter_board_status_update()。 */
+            osMutexWait(data_mutex, osWaitForever);
+            meter_board_status_update(&board_status[board], &board_data, rc);
+            osMutexRelease(data_mutex);
+
             if (rc != MB_OK) {
-                /* Board offline or error — skip this board */
+                /* Board offline or error — 通道資料維持最後已知值，不覆寫。 */
                 dbg_log("[MODBUS] Board %u (slave %u) offline\r\n", board, slave_id);
                 continue;
             }
