@@ -190,7 +190,14 @@ extern u16 SendLen;
 /** @brief Per-phase input power metrics */
 static can_metrics_t phase_metrics[CAN_TOTAL_PHASES];  /* [0]=total, [1]=L1, [2]=L2, [3]=L3 */
 static uint16_t      frequency_fp;                     /* ×0.01Hz */
-static uint8_t       phase_type;                       /* 0=single, 1=three-phase */
+/* 總電錶狀態位元組（CAN payload[2]）。
+ * ⚠ 機種位元（bit0）與 PROTO_V2（bit7）由開機偵測設定，**離線時不得改動**；
+ *   每輪只翻 ONLINE（bit1）。把兩者混在一起正是 D1 的根因。 */
+static uint8_t       meter_status = CAN_METER_PROTO_V2;  /* 開機值：機種未知、離線 */
+
+/* 電錶機種。UNKNOWN 時每輪重試偵測——只在上電偵測一次的話，電錶比 MM32 晚上電
+ * 或當下有干擾，就會讓整台機器的輸入側永遠沒有資料且沒有恢復路徑。 */
+static meter_type_t  g_meter_type = METER_TYPE_UNKNOWN;
 
 static int16_t  env_temp_x10;   /* ×0.1°C，有號（env_source 提供）*/
 static uint16_t env_humi_x10;   /* ×0.1%RH */
@@ -353,7 +360,7 @@ static void prepare_burst_snapshot(void)
 
     /* Power payload */
     can_power_payload_burst.frequency  = frequency_fp;
-    can_power_payload_burst.meter_status = phase_type;
+    can_power_payload_burst.meter_status = meter_status;
     can_power_payload_burst.total      = phase_metrics[0];
     can_power_payload_burst.phases[0]  = phase_metrics[1];
     can_power_payload_burst.phases[1]  = phase_metrics[2];
@@ -658,6 +665,8 @@ void Thread_UART_outlet_stat(void const *argument)
     /* Total power meter */
     total_meter_data_t total_data;
     int total_rc;
+    single_meter_data_t single_data;
+    int single_rc;
 
     dbg_log("[MODBUS] Thread started, polling %u boards + total meter\r\n", METER_BOARD_COUNT);
 
@@ -668,12 +677,30 @@ void Thread_UART_outlet_stat(void const *argument)
         /* Process relay commands first (high priority) */
         process_relay_queue();
 
-        /* ---- Poll total power meter (slave 1, FC03) ---- */
-        total_rc = total_meter_read(&total_data);
-        if (total_rc != MB_OK) {
+        /* ---- 機種偵測（未知時每輪重試）---- */
+        if (g_meter_type == METER_TYPE_UNKNOWN) {
+            g_meter_type = meter_detect_type();
+            g_hb_uart++;
+            if (g_meter_type == METER_TYPE_THREE) {
+                dbg_log("[METER] type = THREE PHASE\r\n");
+            } else if (g_meter_type == METER_TYPE_SINGLE) {
+                dbg_log("[METER] type = SINGLE PHASE\r\n");
+            }
+        }
+
+        /* ---- 依機種讀取總電錶（slave 1, FC03）---- */
+        total_rc = MB_ERR_TIMEOUT;
+        single_rc = MB_ERR_TIMEOUT;
+        if (g_meter_type == METER_TYPE_THREE) {
+            total_rc = total_meter_read(&total_data);
+            g_hb_uart++;
+        } else if (g_meter_type == METER_TYPE_SINGLE) {
+            single_rc = single_meter_read(&single_data);
+            g_hb_uart++;
+        }
+        if (total_rc != MB_OK && single_rc != MB_OK) {
             dbg_log("[MODBUS] Total meter offline\r\n");
         }
-        g_hb_uart++;  /* 每次 Modbus 交易嘗試（含離線）都算進度，避免全離線時卡在單一 cycle 計數器誤判 */
 
         /* ---- Poll each outlet board ---- */
         for (board = 0; board < METER_BOARD_COUNT; board++) {
@@ -715,19 +742,38 @@ void Thread_UART_outlet_stat(void const *argument)
             osMutexRelease(data_mutex);
         }
 
-        /* ---- Update phase metrics from total meter ---- */
+        /* ---- Update phase metrics from total meter ----
+         *
+         * ⚠ meter_status 的機種位元與 PROTO_V2 **不隨讀取結果改變**，
+         *   每輪只翻 ONLINE。量測值照舊清零（host 端依 ONLINE 判斷它是
+         *   「沒讀到」而非「真的是 0」），這正是 D1 的修復點：pdu-core
+         *   無法從 0 A 這個合法量測分辨有無資料，必須由本位元明示。 */
         osMutexWait(data_mutex, osWaitForever);
+
+        meter_status = CAN_METER_PROTO_V2;
+        if (g_meter_type == METER_TYPE_THREE) {
+            meter_status |= CAN_METER_PHASE_THREE;
+        }
+
         if (total_rc == MB_OK) {
             total_meter_to_can(&total_data,
                                &phase_metrics[0],   /* total */
                                &phase_metrics[1]);   /* L1/L2/L3 array */
             frequency_fp = total_data.frequency;
-            phase_type = 1;  /* three-phase */
+            meter_status |= CAN_METER_ONLINE;
+        } else if (single_rc == MB_OK) {
+            /* 單相：total 與 phases[0] 填同值，phases[1..2] 留 0。
+             * 判定端走 total（check_overload() 在 type != 1 時比對 power.total）；
+             * phases[0] 只為了 qt-ui 的 Per-Phase 區不顯示成全 0。 */
+            memset(phase_metrics, 0, sizeof(phase_metrics));
+            single_meter_to_can(&single_data, &phase_metrics[0]);
+            phase_metrics[1] = phase_metrics[0];
+            frequency_fp = single_data.frequency;
+            meter_status |= CAN_METER_ONLINE;
         } else {
-            /* No total meter data: publish empty power snapshot and avoid stale values. */
+            /* 沒讀到：量測清零，ONLINE 不設。機種位元維持不動。 */
             memset(phase_metrics, 0, sizeof(phase_metrics));
             frequency_fp = 0;
-            phase_type = 0;
         }
         osMutexRelease(data_mutex);
 

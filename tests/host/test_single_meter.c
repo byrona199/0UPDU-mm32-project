@@ -33,6 +33,7 @@ int modbus_write_single_reg(uint8_t slave_id, uint16_t reg_addr, uint16_t value)
 int main(void)
 {
     single_meter_data_t sm;
+    single_meter_data_t sm_hilo;
     can_metrics_t       out;
     uint16_t            regs[SINGLE_METER_REG_COUNT];
 
@@ -60,6 +61,18 @@ int main(void)
     assert(sm.energy    == 32000u);
     assert(sm.pf        == 970);
     assert(sm.frequency == 6000);
+
+    /* --- 案例 2b：U32 高低字組的組合方向 ---
+     * 只測 EP_HI == 0 無法揭露高低字寫反：那會讓電能差 65536 倍而測試全綠。
+     * regs[3] 是高位、regs[4] 是低位（與三相 total_meter_read() 的 U32 慣例相同）。
+     * 用獨立變數 sm_hilo，避免覆寫案例 2 留給案例 3 使用的 sm（regs 為共用陣列，
+     * single_meter_parse() 會清空輸出結構，直接沿用 sm 會讓案例 3 的電壓/電流/
+     * 功率/PF 斷言全部改看這裡填的 0）。 */
+    memset(regs, 0, sizeof(regs));
+    regs[SM_OFF_EP_HI] = 1;      /* 高位 1 */
+    regs[SM_OFF_EP_LO] = 5;      /* 低位 5 */
+    single_meter_parse(regs, &sm_hilo);
+    assert(sm_hilo.energy == 65541u);  /* (1 << 16) | 5；寫反會得到 327681 */
 
     /* --- 案例 3：換算到 CAN 定點 ---
      * 單相刻度與三相**不同**，四個換算各自不同，錯一個都不會有錯誤訊息： */
