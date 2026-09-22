@@ -353,7 +353,7 @@ static void prepare_burst_snapshot(void)
 
     /* Power payload */
     can_power_payload_burst.frequency  = frequency_fp;
-    can_power_payload_burst.phase_type = phase_type;
+    can_power_payload_burst.meter_status = phase_type;
     can_power_payload_burst.total      = phase_metrics[0];
     can_power_payload_burst.phases[0]  = phase_metrics[1];
     can_power_payload_burst.phases[1]  = phase_metrics[2];

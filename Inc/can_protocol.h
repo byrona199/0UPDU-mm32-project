@@ -154,7 +154,7 @@ typedef struct {
  *
  * Byte order within the reassembled buffer:
  *   [0-1]   frequency   (uint16_t, ×0.01Hz)
- *   [2]     phase_type  (uint8_t, 0=single, 1=three-phase)
+ *   [2]     meter_status(uint8_t, bitfield，見 CAN_METER_* )
  *   [3-13]  total       (can_metrics_t)
  *   [14-24] phase L1    (can_metrics_t)
  *   [25-35] phase L2    (can_metrics_t)
@@ -168,9 +168,34 @@ typedef struct {
 #define CAN_POWER_DATA_SIZE_V1  47      /* 舊韌體（無溫濕度）payload 大小 */
 #define CAN_POWER_FRAME_COUNT   8       /* ceil(52/7) */
 
+/*----------------------------------------------------------------------------
+ * meter_status（payload[2]，原 phase_type）
+ *
+ * 原本這個 byte 的協定定義是「0=單相, 1=三相」，但韌體實作只有兩個賦值點，
+ * 實際語意是「總電錶這次讀到了沒有」——一個欄位背了兩種語意，是 D1
+ *（總電錶離線導致輸入側告警全數誤清）與「單相產品線未實作」的共同根因。
+ * 現在拆成兩個獨立生命週期的位元：
+ *   機種   —— 開機偵測後固定，執行期不變
+ *   online —— 每輪更新
+ *
+ * ⚠ bit7 是**協定世代標記，不是狀態**。新韌體恆設此位元；can-meter 看到
+ *   bit7 == 0 就知道對方是舊韌體，改以整個 byte 當 phase_type 解讀並把
+ *   online 視為 true。因此本協定變更**不需要嚴格的部署順序**——這與
+ *   BOARD_STATUS 的部署陷阱（見下方 I4 警告）是刻意不同的設計選擇。
+ *
+ * 取值表：
+ *   0x83 新韌體 三相 在線        0x81 新韌體 三相 離線
+ *   0x82 新韌體 單相 在線        0x80 新韌體 單相 離線／機種未知
+ *   0x01 舊韌體 三相             0x00 舊韌體 單相或離線
+ *--------------------------------------------------------------------------*/
+#define CAN_METER_PHASE_THREE   ((uint8_t)0x01u)  /* bit0: 1=三相, 0=單相 */
+#define CAN_METER_ONLINE        ((uint8_t)0x02u)  /* bit1: 1=本輪讀到, 0=未讀到 */
+/* bit2-6 reserved，必須為 0 */
+#define CAN_METER_PROTO_V2      ((uint8_t)0x80u)  /* bit7: 1=本 byte 為 bitfield */
+
 typedef struct {
     uint16_t      frequency;            /* ×0.01Hz */
-    uint8_t       phase_type;           /* 0=single, 1=three-phase */
+    uint8_t       meter_status;         /* bitfield，見 CAN_METER_*（原 phase_type）*/
     can_metrics_t total;
     can_metrics_t phases[CAN_MAX_PHASES]; /* L1, L2, L3 */
     int16_t       temperature;          /* ×0.1°C，有號 */
