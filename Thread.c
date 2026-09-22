@@ -774,7 +774,11 @@ void Thread_UART_outlet_stat(void const *argument)
             frequency_fp = single_data.frequency;
             meter_status |= CAN_METER_ONLINE;
         } else {
-            /* 沒讀到：量測清零，ONLINE 不設。機種位元維持不動。 */
+            /* 沒讀到：量測清零，ONLINE 不設。
+             * 機種位元每輪由 g_meter_type 重建；g_meter_type 只在 UNKNOWN 時才會被寫入，
+             * 讀取失敗不會影響它。⚠ 但 MM32 重開機會讓 g_meter_type 回到 UNKNOWN，
+             * 此時送出的是 0x80（與「單相離線」同值），host 端的 pdu-core 已針對這點
+             * 在孤兒清除加了 total_meter_online 閘門。 */
             memset(phase_metrics, 0, sizeof(phase_metrics));
             frequency_fp = 0;
         }
