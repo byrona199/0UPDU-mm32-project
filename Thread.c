@@ -184,7 +184,9 @@ extern u16 SendLen;
  * Shared Metering Data (protected by data_mutex)
  *
  * All values stored in CAN fixed-point format.
- * Thread_Metering writes; Thread_CAN_RX reads on POLL_REQ.
+ * Thread_UART_outlet_stat writes; Thread_CAN_RX reads on POLL_REQ.
+ * （注意：不是 Thread_Metering——後者是另一個獨立的執行緒。這行原本寫錯，
+ *  曾實際誤導過改動者把修改找到錯的函式上。）
  *============================================================================*/
 
 /** @brief Per-phase input power metrics */
@@ -699,7 +701,8 @@ void Thread_UART_outlet_stat(void const *argument)
             g_hb_uart++;
         }
         if (total_rc != MB_OK && single_rc != MB_OK) {
-            dbg_log("[MODBUS] Total meter offline\r\n");
+            /* 措辭涵蓋兩種機種：單相機種離線時走的也是這條路徑。 */
+            dbg_log("[MODBUS] Input meter offline\r\n");
         }
 
         /* ---- Poll each outlet board ---- */
