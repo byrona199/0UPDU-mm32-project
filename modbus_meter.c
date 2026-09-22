@@ -285,3 +285,81 @@ void total_meter_to_can(const total_meter_data_t *tm,
     out_total->pf      = (uint8_t)(tm->total_pf / 10);
     out_total->energy  = tm->total_energy;
 }
+
+/*============================================================================
+ * 電錶機種判定
+ *============================================================================*/
+
+meter_type_t meter_type_from_model(uint16_t model1, uint16_t model2)
+{
+    (void)model2;   /* 目前只用 model1 即可唯一區分；保留參數供日後擴充 */
+
+    if (model1 == METER_MODEL1_THREE)  return METER_TYPE_THREE;
+    if (model1 == METER_MODEL1_SINGLE) return METER_TYPE_SINGLE;
+    return METER_TYPE_UNKNOWN;
+}
+
+meter_type_t meter_detect_type(void)
+{
+    uint16_t regs[METER_MODEL_REG_COUNT];
+    int rc;
+
+    rc = modbus_read_regs(TOTAL_METER_SLAVE_ID, MB_FC_READ_HOLDING_REGS,
+                          METER_MODEL_REG, METER_MODEL_REG_COUNT, regs);
+    if (rc != MB_OK) {
+        dbg_log("[METER] detect failed: rc=%d\r\n", rc);
+        return METER_TYPE_UNKNOWN;
+    }
+
+    /* raw 值一律印出：型號的十六／十進位解讀在兩份手冊裡標注慣例不同，
+     * 實機用這行一次性確認（spec §9 已知限制 3）。 */
+    dbg_log("[METER] model1=0x%04X model2=0x%04X\r\n", regs[0], regs[1]);
+
+    return meter_type_from_model(regs[0], regs[1]);
+}
+
+/*============================================================================
+ * 單相電錶
+ *============================================================================*/
+
+void single_meter_parse(const uint16_t *regs, single_meter_data_t *out)
+{
+    memset(out, 0, sizeof(single_meter_data_t));
+
+    out->voltage   = regs[SM_OFF_VOLTAGE];
+    out->current   = regs[SM_OFF_CURRENT];
+    out->power     = regs[SM_OFF_POWER];
+    out->energy    = ((uint32_t)regs[SM_OFF_EP_HI] << 16)
+                   | (uint32_t)regs[SM_OFF_EP_LO];
+    out->pf        = regs[SM_OFF_PF];
+    out->frequency = regs[SM_OFF_FREQ];
+}
+
+int single_meter_read(single_meter_data_t *out)
+{
+    uint16_t regs[SINGLE_METER_REG_COUNT];
+    int rc;
+
+    rc = modbus_read_regs(TOTAL_METER_SLAVE_ID, MB_FC_READ_HOLDING_REGS,
+                          SINGLE_METER_START_REG, SINGLE_METER_REG_COUNT, regs);
+    if (rc != MB_OK) {
+        dbg_log("[SMETER] read failed: rc=%d\r\n", rc);
+        return rc;
+    }
+
+    single_meter_parse(regs, out);
+
+    dbg_log("[SMETER] V=%u I=%u P=%u PF=%u F=%u E=%lu\r\n",
+            out->voltage, out->current, out->power, out->pf,
+            out->frequency, (unsigned long)out->energy);
+    return MB_OK;
+}
+
+void single_meter_to_can(const single_meter_data_t *sm, can_metrics_t *out_total)
+{
+    out_total->voltage = sm->voltage / 10;      /* /100 V    → ×0.1V    */
+    out_total->current = sm->current / 10;      /* /1000 A   → ×0.01A   */
+    out_total->power   = sm->power;             /* W         → ×1W      */
+    out_total->pf      = (uint8_t)(sm->pf / 10);/* /1000     → ×0.01    */
+    out_total->energy  = sm->energy / 32u;      /* /3200 kWh → ×0.01kWh */
+}

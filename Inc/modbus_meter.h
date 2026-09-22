@@ -303,4 +303,95 @@ void total_meter_to_can(const total_meter_data_t *tm,
                         can_metrics_t *out_total,
                         can_metrics_t out_phases[3]);
 
+/*============================================================================
+ * 單相總電錶 JSY-MK-109（JSY1009）
+ *
+ * 出貨時單相／三相**只會安裝一種**，兩者 slave id 都是 1，靠型號暫存器分辨。
+ * 暫存器與刻度與三相完全不同，不可套用 TM_OFF_* 或 total_meter_to_can()。
+ *============================================================================*/
+
+#define SINGLE_METER_START_REG  0x0048
+#define SINGLE_METER_REG_COUNT  10      /* 0x0048 .. 0x0051 */
+
+/* Register offsets (index into FC03 response array, base = 0x0048) */
+#define SM_OFF_VOLTAGE  0       /* 0x0048, /100 V    */
+#define SM_OFF_CURRENT  1       /* 0x0049, /1000 A   */
+#define SM_OFF_POWER    2       /* 0x004A, W         */
+#define SM_OFF_EP_HI    3       /* 0x004B, U32 high  */
+#define SM_OFF_EP_LO    4       /* 0x004C, U32 low   */
+#define SM_OFF_PF       5       /* 0x004D, /1000     */
+#define SM_OFF_FREQ     9       /* 0x0051, /100 Hz   */
+
+typedef struct {
+    uint16_t voltage;        /* raw /100 V    */
+    uint16_t current;        /* raw /1000 A   */
+    uint16_t power;          /* raw W         */
+    uint32_t energy;         /* raw /3200 kWh ⚠ 非 10 的冪次，見 single_meter_to_can() */
+    uint16_t pf;             /* raw /1000     */
+    uint16_t frequency;      /* raw /100 Hz   */
+} single_meter_data_t;
+
+/*============================================================================
+ * 電錶機種
+ *============================================================================*/
+
+/* 兩款電錶都在 0x0000/0x0001 有型號暫存器、都用 FC03，位址重疊而值不同。 */
+#define METER_MODEL_REG         0x0000
+#define METER_MODEL_REG_COUNT   2
+#define METER_MODEL1_THREE      0x0333  /* JSY-MK-333 三相 */
+#define METER_MODEL1_SINGLE     0x9000  /* JSY-MK-109 單相 */
+#define METER_MODEL2_SINGLE     0xB131  /* JSY-MK-109 型號2（輔助確認）*/
+
+typedef enum {
+    METER_TYPE_UNKNOWN = 0,   /* 尚未偵測到／讀取失敗 → 必須重試 */
+    METER_TYPE_SINGLE  = 1,
+    METER_TYPE_THREE   = 2
+} meter_type_t;
+
+/**
+ * @brief 由型號暫存器值判定機種（純函式，可 host 測試）
+ *
+ * ⚠ 用**兩個正面判準**，不是「不是三相就是單相」：接上第三種電錶時必須明確
+ *   回 UNKNOWN 並持續重試，而不是被誤判成某一種後讀到全 0——那會長得跟
+ *   「電錶離線」一模一樣，且沒有任何錯誤訊息。
+ *
+ * @param model1 暫存器 0x0000 的值
+ * @param model2 暫存器 0x0001 的值（目前僅供日後擴充，單相為 0xB131）
+ */
+meter_type_t meter_type_from_model(uint16_t model1, uint16_t model2);
+
+/**
+ * @brief 讀型號暫存器並判定機種（FC03, slave 1, 0x0000, 2 regs）
+ * @return METER_TYPE_UNKNOWN 表示讀取失敗或型號不認得，呼叫端必須重試
+ */
+meter_type_t meter_detect_type(void);
+
+/**
+ * @brief 解析單相電錶的 FC03 回應（純函式）
+ * @param regs SINGLE_METER_REG_COUNT 個暫存器，索引 = 位址 - 0x0048
+ * @param out  輸出，先被清零
+ */
+void single_meter_parse(const uint16_t *regs, single_meter_data_t *out);
+
+/**
+ * @brief 讀取單相總電錶（FC03, slave 1, 0x0048, 10 regs）
+ * @return MB_OK on success, negative on failure
+ */
+int single_meter_read(single_meter_data_t *out);
+
+/**
+ * @brief 單相電錶 → CAN 定點（純函式）
+ *
+ * 刻度與三相**完全不同**，四者各異：
+ *   voltage: /100 V    → CAN ×0.1V     (raw/10)
+ *   current: /1000 A   → CAN ×0.01A    (raw/10)   ← 三相是 raw
+ *   power:   W         → CAN ×1W       (raw)
+ *   pf:      /1000     → CAN ×0.01     (raw/10)
+ *   energy:  /3200 kWh → CAN ×0.01kWh  (raw/32)   ← 三相是 raw
+ *
+ * ⚠ energy 的 /3200 取自手冊，尚未實機驗證（見 spec AC9）。誤用 /100 會差 32 倍
+ *   且無任何錯誤訊息。
+ */
+void single_meter_to_can(const single_meter_data_t *sm, can_metrics_t *out_total);
+
 #endif /* __MODBUS_METER_H */
