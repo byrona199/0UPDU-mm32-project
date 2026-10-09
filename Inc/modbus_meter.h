@@ -361,6 +361,16 @@ typedef enum {
 meter_type_t meter_type_from_model(uint16_t model1, uint16_t model2);
 
 /**
+ * @brief 依總電錶機種決定插座相位（OUTLET_STATE 的 phase_mapping）。
+ *
+ * 三相：outlet_idx / (CAN_MAX_OUTLETS / CAN_MAX_PHASES) → 0..2（outlet 1–16／17–32／33–48）。
+ * 單相、機種未知或越界：0（L1）。單相機若分到 L2/L3，pdu-core 的逐相插座共通電壓檢查
+ * 會對同一條匯流排產生 3 筆重複告警；機種未知時也不假設有 L2/L3。
+ * 相位的設定機制另案處理（qt-ui 改版 spec §1.2）。
+ */
+uint8_t outlet_phase_for(uint8_t outlet_idx, meter_type_t type);
+
+/**
  * @brief 讀型號暫存器並判定機種（FC03, slave 1, 0x0000, 2 regs）
  * @return METER_TYPE_UNKNOWN 表示讀取失敗或型號不認得，呼叫端必須重試
  */

@@ -211,9 +211,6 @@ static can_metrics_t outlet_metrics[MAX_OUTLET];
 /** @brief Outlet states: 1=ON, 0=OFF */
 static uint8_t outlet_state[MAX_OUTLET];
 
-/** @brief Outlet phase mapping: 0=L1, 1=L2, 2=L3 */
-static uint8_t outlet_phase[MAX_OUTLET];
-
 /** @brief Per-board status（12 板，含頻率與 online bit）
  *  跨輪保留：離線時 meter_board_status_update() 只清 online、保留 frequency，
  *  所以這個陣列不可在每輪迴圈開頭歸零。開機初值全 0 = 離線且無資料，正確。 */
@@ -296,8 +293,6 @@ static void send_connect_req(void)
  *============================================================================*/
 int Init_Thread(void)
 {
-    uint8_t i;
-
     uart_sem  = osSemaphoreCreate(osSemaphore(uart_sem), 1);
 #if ENABLE_DBG_LOG
     uart_mutex = osMutexCreate(osMutex(uart_mutex));
@@ -305,11 +300,6 @@ int Init_Thread(void)
     can_mutex  = osMutexCreate(osMutex(can_mutex));
     data_mutex = osMutexCreate(osMutex(data_mutex));
     relay_q_mutex = osMutexCreate(osMutex(relay_q_mutex));
-
-    /* Initialize default outlet phase mapping (all L1) */
-    for (i = 0; i < MAX_OUTLET; i++) {
-        outlet_phase[i] = 0;  /* L1 */
-    }
 
     /* CAN / modbus / metering threads: only when a valid role is configured.
      * role=0 (unconfigured) runs Thread_Display only; user must commission
@@ -374,7 +364,9 @@ static void prepare_burst_snapshot(void)
     /* Outlet state: 3 bits per outlet, LSB-first */
     memset(outlet_state_burst, 0, sizeof(outlet_state_burst));
     for (i = 0; i < MAX_OUTLET; i++) {
-        uint8_t packed    = CAN_OUTLET_PACK(outlet_state[i], outlet_phase[i]);
+        /* 相位依當下機種決定：g_meter_type 在電錶執行緒偵測成功前是 UNKNOWN，
+         * 那段期間全部 L1，偵測到三相後的下一輪才分成 16/16/16。 */
+        uint8_t packed    = CAN_OUTLET_PACK(outlet_state[i], outlet_phase_for(i, g_meter_type));
         uint16_t byte_idx = bit_offset / 8;
         uint8_t  bit_pos  = bit_offset % 8;
         outlet_state_burst[byte_idx] |= (packed << bit_pos) & 0xFF;

@@ -299,6 +299,13 @@ meter_type_t meter_type_from_model(uint16_t model1, uint16_t model2)
     return METER_TYPE_UNKNOWN;
 }
 
+uint8_t outlet_phase_for(uint8_t outlet_idx, meter_type_t type)
+{
+    if (type != METER_TYPE_THREE || outlet_idx >= CAN_MAX_OUTLETS)
+        return 0u;
+    return (uint8_t)(outlet_idx / (CAN_MAX_OUTLETS / CAN_MAX_PHASES));
+}
+
 meter_type_t meter_detect_type(void)
 {
     uint16_t regs[METER_MODEL_REG_COUNT];
